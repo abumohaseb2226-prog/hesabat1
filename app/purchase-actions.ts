@@ -42,6 +42,7 @@ async function checkAuthorizedUser() {
   return user
 }
 
+// إنشاء فاتورة مشتريات / مرتجع جديدة
 export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
   try {
     const user = await checkAuthorizedUser()
@@ -65,7 +66,7 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
     const invoiceDate = data.date ? new Date(data.date) : new Date()
     const invoiceNumber = data.invoiceNo?.trim() || `PUR-${Date.now().toString().slice(-6)}`
 
-    // تنظيف وتجميع البنود المتطابقة لتفادي أخطاء التكرار
+    // تنظيف وتجميع البنود
     const consolidatedItemsMap = new Map<string, {
       modelNo: string
       color: string
@@ -118,57 +119,56 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
       return { success: false, error: 'يرجى اختيار الخزنة للدفع النقدي' }
     }
 
-    // تنفيذ الـ Transaction
     await prisma.$transaction(
       async (tx) => {
-        const modelList = Array.from(new Set(finalItems.map(i => i.modelNo)))
-        const existingProducts = await tx.product.findMany({
-          where: {
-            modelNo: { in: modelList }
+        const isPurchase = data.invoiceType === 'PURCHASE'
+        const transType = isPurchase ? 'PURCHASE' : 'RETURN'
+
+        // 1. إنشاء الفاتورة الأساسية في جدول PurchaseInvoice
+        const purchaseInvoice = await tx.purchaseInvoice.create({
+          data: {
+            invoiceNo: invoiceNumber,
+            invoiceType: data.invoiceType,
+            paymentStatus: data.paymentStatus,
+            date: invoiceDate,
+            totalAmount: totalAmount,
+            notes: data.notes || '',
+            vendorId: vendor.id,
+            safeId: data.paymentStatus === 'CASH' ? data.safeId : null,
+            userId: user.id
           }
         })
 
-        const productMap = new Map<string, typeof existingProducts[0]>()
-        existingProducts.forEach(p => {
-          const key = `${p.modelNo.toLowerCase().trim()}|${p.color.toLowerCase().trim()}`
-          productMap.set(key, p)
-        })
-
-        const isPurchase = data.invoiceType === 'PURCHASE'
-
+        // 2. تحديث المنتجات وإضافة بنود الفاتورة في PurchaseInvoiceItem
         for (const item of finalItems) {
-          const key = `${item.modelNo.toLowerCase()}|${item.color.toLowerCase()}`
-          const existingProduct = productMap.get(key)
+          let product = await tx.product.findUnique({
+            where: {
+              modelNo_color: { modelNo: item.modelNo, color: item.color }
+            }
+          })
 
-          if (existingProduct) {
-            // ✅ التصحيح الأساسي هنا:
-            // في الشراء: تزيد الكمية الحالية currentStock والمخزون الكلي
-            // في المرتجع: ينقص فقط الرصيد المتاح currentStock حتى لو بالسالب،
-            // بينما المخزون الأولي stockQty يظل كما هو دون تصفير!
-            const currentStockDelta = isPurchase ? item.quantity : -item.quantity
-            const stockQtyDelta = isPurchase ? item.quantity : 0 // لا نلمس المخزون الأولي بالسالب
+          const stockChange = isPurchase ? item.quantity : -item.quantity
+          const stockQtyDelta = isPurchase ? item.quantity : 0
 
-            await tx.product.update({
-              where: { id: existingProduct.id },
+          if (product) {
+            product = await tx.product.update({
+              where: { id: product.id },
               data: {
                 stockQty: { increment: stockQtyDelta },
-                currentStock: { increment: currentStockDelta },
-                cost: item.cost > 0 ? item.cost : existingProduct.cost,
+                currentStock: { increment: stockChange },
+                cost: item.cost > 0 ? item.cost : product.cost,
                 vendor: vendor.name,
                 vendorId: vendor.id,
-                description: item.description || existingProduct.description
+                description: item.description || product.description
               }
             })
           } else {
-            // إذا كان صنفاً جديداً تماماً:
-            // في الشراء: رصيده موجب
-            // في المرتجع: رصيده الحالي سالب، والمخزون الأولي يظل صفر كبداية
-            await tx.product.create({
+            product = await tx.product.create({
               data: {
                 modelNo: item.modelNo,
                 color: item.color,
-                stockQty: isPurchase ? item.quantity : 0, // المخزون الأولي لا يكون سالباً
-                currentStock: isPurchase ? item.quantity : -item.quantity, // الرصيد المتاح يسمح بالسالب
+                stockQty: isPurchase ? item.quantity : 0,
+                currentStock: stockChange,
                 cost: item.cost,
                 price: item.price,
                 vendor: vendor.name,
@@ -177,27 +177,37 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
               }
             })
           }
+
+          // حفظ البند في جدول بنود الفاتورة
+          await tx.purchaseInvoiceItem.create({
+            data: {
+              invoiceId: purchaseInvoice.id,
+              productId: product.id,
+              quantity: item.quantity,
+              cost: item.cost,
+              price: item.price,
+              description: item.description || ''
+            }
+          })
         }
 
-        // تسجيل حركة المورد
-        const transType = isPurchase ? 'PURCHASE' : 'RETURN'
-        const transDesc = isPurchase
-          ? `فاتورة مشتريات #${invoiceNumber} (${data.paymentStatus === 'CASH' ? 'نقدي' : 'آجل'}) ${data.notes ? `- ${data.notes}` : ''}`
-          : `مرتجع مشتريات للمورد #${invoiceNumber} (${data.paymentStatus === 'CASH' ? 'نقدي' : 'آجل'}) ${data.notes ? `- ${data.notes}` : ''}`
-
+        // 3. ✅ سطر مالي واحد فقط في كشف حساب المورد بإجمالي الفاتورة!
+        const totalPieces = finalItems.reduce((s, it) => s + it.quantity, 0)
         await tx.vendorTransaction.create({
           data: {
             vendorId: vendor.id,
             type: transType,
             amount: totalAmount,
-            description: transDesc,
             reference: invoiceNumber,
+            description: isPurchase
+              ? `فاتورة مشتريات #${invoiceNumber} (${data.paymentStatus === 'CASH' ? 'نقدي' : 'آجل'}) - إجمالي ${finalItems.length} صنف (${totalPieces} قطعة)`
+              : `مرتجع مشتريات للمورد #${invoiceNumber} (${data.paymentStatus === 'CASH' ? 'نقدي' : 'آجل'}) - إجمالي ${finalItems.length} صنف (${totalPieces} قطعة)`,
             userId: user.id,
             createdAt: invoiceDate
           }
         })
 
-        // في حال الدفع النقدي
+        // 4. في حال السداد النقدي
         if (data.paymentStatus === 'CASH' && data.safeId) {
           if (isPurchase) {
             await tx.payment.create({
@@ -228,10 +238,7 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
           }
         }
       },
-      {
-        maxWait: 30000,
-        timeout: 60000
-      }
+      { maxWait: 30000, timeout: 60000 }
     )
 
     revalidatePath('/admin/products')
@@ -243,12 +250,323 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
     return {
       success: true,
       message: data.invoiceType === 'PURCHASE' 
-        ? `تم حفظ فاتورة المشتريات رقم #${invoiceNumber} وتحديث المخزون بنجاح` 
-        : `تم حفظ مرتجع المشتريات رقم #${invoiceNumber} وتحديث المخزون بنجاح`
+        ? `تم حفظ فاتورة المشتريات رقم #${invoiceNumber} بنجاح` 
+        : `تم حفظ مرتجع المشتريات رقم #${invoiceNumber} بنجاح`
     }
   } catch (error: any) {
     console.error('Error creating purchase invoice:', error)
     return { success: false, error: error.message || 'حدث خطأ أثناء حفظ الفاتورة' }
+  }
+}
+
+// استرجاع تفاصيل بنود الفاتورة بالكامل من الجدول المخصص لها للتعديل
+export async function getPurchaseInvoiceDetails(invoiceNumber: string) {
+  try {
+    await checkAuthorizedUser()
+
+    // 1. البحث أولاً في جدول فواتير المشتريات المستقل
+    const invoice = await prisma.purchaseInvoice.findUnique({
+      where: { invoiceNo: invoiceNumber },
+      include: {
+        vendor: true,
+        items: {
+          include: { product: true }
+        }
+      }
+    })
+
+    if (invoice) {
+      return {
+        success: true,
+        invoice: {
+          invoiceNo: invoice.invoiceNo,
+          invoiceType: invoice.invoiceType,
+          paymentStatus: invoice.paymentStatus,
+          safeId: invoice.safeId || '',
+          vendorId: invoice.vendorId,
+          vendorName: invoice.vendor.name,
+          date: invoice.date.toISOString().split('T')[0],
+          notes: invoice.notes || '',
+          items: invoice.items.map(it => ({
+            id: it.id,
+            productId: it.productId,
+            modelNo: it.product.modelNo,
+            color: it.product.color,
+            quantity: it.quantity,
+            cost: it.cost,
+            price: it.price,
+            description: it.description || ''
+          }))
+        }
+      }
+    }
+
+    // 2. كمرجعية للفواتير القديمة المسجلة قبل التحديث
+    const transactions = await prisma.vendorTransaction.findMany({
+      where: { reference: invoiceNumber },
+      include: { product: true, vendor: true }
+    })
+
+    if (transactions.length > 0) {
+      const first = transactions[0]
+      return {
+        success: true,
+        invoice: {
+          invoiceNo: invoiceNumber,
+          invoiceType: first.type,
+          paymentStatus: 'CREDIT',
+          safeId: '',
+          vendorId: first.vendorId,
+          vendorName: first.vendor.name,
+          date: first.createdAt.toISOString().split('T')[0],
+          notes: '',
+          items: transactions.map(t => ({
+            id: t.id,
+            productId: t.productId,
+            modelNo: t.product?.modelNo || '',
+            color: t.product?.color || 'افتراضي',
+            quantity: t.quantity || 1,
+            cost: t.quantity ? t.amount / t.quantity : t.amount,
+            price: t.product?.price || 0,
+            description: t.description || ''
+          }))
+        }
+      }
+    }
+
+    return { success: false, error: 'الفاتورة غير موجودة' }
+  } catch (error: any) {
+    return { success: false, error: error.message || 'فشل جلب تفاصيل الفاتورة' }
+  }
+}
+
+// تحديث بنود الفاتورة وإعادة وزن المخزون والنقدية بدقة تامة
+export async function updatePurchaseInvoice(invoiceNumber: string, data: PurchaseInvoicePayload) {
+  try {
+    const user = await checkAuthorizedUser()
+
+    const oldInvoice = await prisma.purchaseInvoice.findUnique({
+      where: { invoiceNo: invoiceNumber },
+      include: { items: true }
+    })
+
+    const vendor = await prisma.vendor.findUnique({
+      where: { id: data.vendorId }
+    })
+
+    if (!vendor) return { success: false, error: 'المورد غير موجود' }
+
+    const invoiceDate = data.date ? new Date(data.date) : new Date()
+
+    await prisma.$transaction(async (tx) => {
+      // 1. عكس الأثر القديم للمخزون
+      if (oldInvoice) {
+        const isOldPurchase = oldInvoice.invoiceType === 'PURCHASE'
+        for (const it of oldInvoice.items) {
+          const delta = isOldPurchase ? -it.quantity : it.quantity
+          await tx.product.update({
+            where: { id: it.productId },
+            data: {
+              stockQty: { increment: isOldPurchase ? -it.quantity : 0 },
+              currentStock: { increment: delta }
+            }
+          })
+        }
+      } else {
+        // فواتير سابقة
+        const oldTrans = await tx.vendorTransaction.findMany({ where: { reference: invoiceNumber } })
+        for (const t of oldTrans) {
+          if (t.productId && t.quantity) {
+            const delta = t.type === 'PURCHASE' ? -t.quantity : t.quantity
+            await tx.product.update({
+              where: { id: t.productId },
+              data: { currentStock: { increment: delta } }
+            })
+          }
+        }
+      }
+
+      // 2. حذف السندات والبيانات القديمة
+      await tx.payment.deleteMany({ where: { description: { contains: `#${invoiceNumber}` } } })
+      await tx.vendorTransaction.deleteMany({ where: { reference: invoiceNumber } })
+      await tx.purchaseInvoice.deleteMany({ where: { invoiceNo: invoiceNumber } })
+
+      // 3. تطبيق الفاتورة الجديدة بالكامل
+      const isPurchase = data.invoiceType === 'PURCHASE'
+      const transType = isPurchase ? 'PURCHASE' : 'RETURN'
+      let totalAmount = 0
+
+      const newInv = await tx.purchaseInvoice.create({
+        data: {
+          invoiceNo: invoiceNumber,
+          invoiceType: data.invoiceType,
+          paymentStatus: data.paymentStatus,
+          date: invoiceDate,
+          totalAmount: 0,
+          notes: data.notes || '',
+          vendorId: vendor.id,
+          safeId: data.paymentStatus === 'CASH' ? data.safeId : null,
+          userId: user.id
+        }
+      })
+
+      for (const item of data.items) {
+        const qty = Number(item.quantity) || 0
+        const cost = Number(item.cost) || 0
+        const price = Number(item.price) || (cost * 1.25)
+        const modelNo = String(item.modelNo).trim()
+        const color = String(item.color).trim() || 'افتراضي'
+
+        if (!modelNo || qty <= 0) continue
+
+        totalAmount += (qty * cost)
+
+        let product = await tx.product.findUnique({
+          where: { modelNo_color: { modelNo, color } }
+        })
+
+        const stockChange = isPurchase ? qty : -qty
+
+        if (product) {
+          product = await tx.product.update({
+            where: { id: product.id },
+            data: {
+              stockQty: { increment: isPurchase ? qty : 0 },
+              currentStock: { increment: stockChange },
+              cost: cost > 0 ? cost : product.cost,
+              vendor: vendor.name,
+              vendorId: vendor.id,
+              description: item.description || product.description
+            }
+          })
+        } else {
+          product = await tx.product.create({
+            data: {
+              modelNo,
+              color,
+              stockQty: isPurchase ? qty : 0,
+              currentStock: stockChange,
+              cost,
+              price,
+              vendor: vendor.name,
+              vendorId: vendor.id,
+              description: item.description || ''
+            }
+          })
+        }
+
+        await tx.purchaseInvoiceItem.create({
+          data: {
+            invoiceId: newInv.id,
+            productId: product.id,
+            quantity: qty,
+            cost: cost,
+            price: price,
+            description: item.description || ''
+          }
+        })
+      }
+
+      await tx.purchaseInvoice.update({
+        where: { id: newInv.id },
+        data: { totalAmount }
+      })
+
+      // سطر واحد مالي فقط في كشف حساب المورد
+      await tx.vendorTransaction.create({
+        data: {
+          vendorId: vendor.id,
+          type: transType,
+          amount: totalAmount,
+          reference: invoiceNumber,
+          description: isPurchase
+            ? `فاتورة مشتريات #${invoiceNumber} (معدلة) - إجمالي ${data.items.length} صنف`
+            : `مرتجع مشتريات #${invoiceNumber} (معدل) - إجمالي ${data.items.length} صنف`,
+          userId: user.id,
+          createdAt: invoiceDate
+        }
+      })
+
+      // حركة الخزنة إن كانت نقداً
+      if (data.paymentStatus === 'CASH' && data.safeId && totalAmount > 0) {
+        await tx.payment.create({
+          data: {
+            type: isPurchase ? 'OUT' : 'IN',
+            amount: totalAmount,
+            currency: 'EGP',
+            safeId: data.safeId,
+            vendorId: vendor.id,
+            userId: user.id,
+            description: `${isPurchase ? 'سداد نقدي لفاتورة مشتريات' : 'استرداد نقدي لمرتجع'} #${invoiceNumber} للمورد: ${vendor.name}`,
+            createdAt: invoiceDate
+          }
+        })
+      }
+    }, { maxWait: 30000, timeout: 60000 })
+
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/vendors')
+    revalidatePath(`/admin/vendors/${vendor.id}`)
+    revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/reports')
+
+    return { success: true, message: `تم تحديث بنود الفاتورة #${invoiceNumber} بنجاح` }
+  } catch (error: any) {
+    console.error('Error updating purchase invoice:', error)
+    return { success: false, error: error.message || 'فشل تحديث الفاتورة' }
+  }
+}
+
+// دالة حذف وإلغاء فاتورة المشتريات أو المرتجع وعكس أثر المخزون
+export async function cancelVendorInvoice(invoiceNumber: string) {
+  try {
+    await checkAuthorizedUser()
+
+    const invoice = await prisma.purchaseInvoice.findUnique({
+      where: { invoiceNo: invoiceNumber },
+      include: { items: true }
+    })
+
+    await prisma.$transaction(async (tx) => {
+      if (invoice) {
+        const isPurchase = invoice.invoiceType === 'PURCHASE'
+        for (const it of invoice.items) {
+          const delta = isPurchase ? -it.quantity : it.quantity
+          await tx.product.update({
+            where: { id: it.productId },
+            data: {
+              stockQty: { increment: isPurchase ? -it.quantity : 0 },
+              currentStock: { increment: delta }
+            }
+          })
+        }
+        await tx.purchaseInvoice.delete({ where: { id: invoice.id } })
+      } else {
+        // حركات قديمة
+        const oldTrans = await tx.vendorTransaction.findMany({ where: { reference: invoiceNumber } })
+        for (const t of oldTrans) {
+          if (t.productId && t.quantity) {
+            const delta = t.type === 'PURCHASE' ? -t.quantity : t.quantity
+            await tx.product.update({
+              where: { id: t.productId },
+              data: { currentStock: { increment: delta } }
+            })
+          }
+        }
+      }
+
+      await tx.payment.deleteMany({ where: { description: { contains: `#${invoiceNumber}` } } })
+      await tx.vendorTransaction.deleteMany({ where: { reference: invoiceNumber } })
+    })
+
+    revalidatePath('/admin/products')
+    revalidatePath('/admin/vendors')
+    revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/reports')
+
+    return { success: true, message: `تم إلغاء وحذف الفاتورة #${invoiceNumber} وعكس أثر المخزون والنقدية بنجاح` }
+  } catch (error: any) {
+    return { success: false, error: error.message || 'فشل إلغاء الفاتورة' }
   }
 }
 
@@ -279,7 +597,6 @@ export async function searchProductsForPurchase(query: string) {
 
     return products
   } catch (error) {
-    console.error('Error searching products:', error)
     return []
   }
 }
@@ -306,7 +623,6 @@ export async function getModelColors(modelNo: string) {
 
     return products
   } catch (error) {
-    console.error('Error fetching model colors:', error)
     return []
   }
 }
@@ -318,9 +634,7 @@ export async function fetchProductsForExcelImport(items: { modelNo: string; colo
     const modelNos = Array.from(new Set(items.map(i => String(i.modelNo).trim())))
 
     const dbProducts = await prisma.product.findMany({
-      where: {
-        modelNo: { in: modelNos }
-      },
+      where: { modelNo: { in: modelNos } },
       select: {
         id: true,
         modelNo: true,
@@ -334,7 +648,6 @@ export async function fetchProductsForExcelImport(items: { modelNo: string; colo
 
     return JSON.parse(JSON.stringify(dbProducts))
   } catch (error) {
-    console.error('Error fetching products for Excel import:', error)
     return []
   }
 }
@@ -390,54 +703,6 @@ export async function createQuickProduct(data: {
 
     revalidatePath('/admin/products')
     return { success: true, product }
-  } catch (error: any) {
-    return { success: false, error: error.message }
-  }
-}
-
-// دالة تصحيح وترميم للأصناف التي تصفّر مخزونها الأولي بالخطأ
-export async function fixCorruptedInitialStock() {
-  try {
-    await checkAuthorizedUser()
-
-    const products = await prisma.product.findMany({
-      where: {
-        stockQty: { lte: 0 },
-        currentStock: { not: 0 }
-      },
-      include: {
-        orderItems: {
-          include: { returnItems: true }
-        }
-      }
-    })
-
-    let fixedCount = 0
-
-    for (const p of products) {
-      const totalSoldFromOrders = p.orderItems.reduce((acc, item) => acc + (item.quantity || 0), 0)
-      const totalReturned = p.orderItems.reduce(
-        (acc, item) => acc + (item.returnItems?.reduce((sum, ret) => sum + ret.quantity, 0) || 0),
-        0
-      )
-      const netSold = totalSoldFromOrders - totalReturned
-
-      // استعادة المخزون الأولي: الرصيد المتاح الحالي + ما تم بيعه
-      const restoredStockQty = Math.max(0, p.currentStock + netSold)
-
-      if (restoredStockQty > 0) {
-        await prisma.product.update({
-          where: { id: p.id },
-          data: { stockQty: restoredStockQty }
-        })
-        fixedCount++
-      }
-    }
-
-    revalidatePath('/admin/products')
-    revalidatePath('/admin/reports')
-
-    return { success: true, message: `تم فحص وترميم المخزون الأولي لـ ${fixedCount} صنف بنجاح` }
   } catch (error: any) {
     return { success: false, error: error.message }
   }

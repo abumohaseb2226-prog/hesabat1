@@ -197,9 +197,9 @@ export async function getVendorBalance(vendorId: string) {
     let debit = 0
 
     transactions.forEach(t => {
-      if (t.type === 'PURCHASE' || t.type === 'RETURN') {
+      if (t.type === 'PURCHASE') {
         credit += t.amount
-      } else if (t.type === 'PAYMENT') {
+      } else if (t.type === 'PAYMENT' || t.type === 'RETURN') {
         debit += t.amount
       }
     })
@@ -219,13 +219,11 @@ export async function getVendorBalance(vendorId: string) {
   }
 }
 
-// ========================================
-// 8. جلب كشف حساب المورد (دفتر الأستاذ)
-// ========================================
+// =========================================================================
+// 8. جلب كشف حساب المورد (مع احتساب رصيد الأصناف الأولية + الفواتير المجمعة)
+// =========================================================================
 export async function getVendorLedger(vendorId: string) {
   try {
-    console.log('🔍 Getting ledger for vendor:', vendorId)
-    
     const vendor = await prisma.vendor.findUnique({
       where: { id: vendorId },
     })
@@ -234,9 +232,14 @@ export async function getVendorLedger(vendorId: string) {
       return { success: false, error: 'المورد غير موجود' }
     }
 
-    // ✅ جلب المنتجات بالاسم (مش بالـ vendorId)
+    // 1. جلب الأصناف المربوطة بالمورد (سواء بالمعرف vendorId أو بالاسم vendor.name)
     const products = await prisma.product.findMany({
-      where: { vendor: vendor.name }, // ✅ الربط بالاسم
+      where: {
+        OR: [
+          { vendorId: vendor.id },
+          { vendor: vendor.name },
+        ],
+      },
       select: {
         id: true,
         modelNo: true,
@@ -247,9 +250,17 @@ export async function getVendorLedger(vendorId: string) {
       },
     })
 
-    console.log('📦 Found products:', products.length)
+    // 2. حساب إجمالي رصيد المخزون الافتتاحي للأصناف المرفوعة
+    let productsTotal = 0
+    let totalQuantity = 0
 
-    // جلب حركات VendorTransaction
+    products.forEach(p => {
+      const amount = (p.stockQty || 0) * (p.cost || 0)
+      productsTotal += amount
+      totalQuantity += (p.stockQty || 0)
+    })
+
+    // 3. جلب حركات المورد من جدول VendorTransaction
     const transactions = await prisma.vendorTransaction.findMany({
       where: { vendorId },
       include: {
@@ -259,7 +270,7 @@ export async function getVendorLedger(vendorId: string) {
       orderBy: { createdAt: 'asc' },
     })
 
-    // جلب سندات الدفع
+    // 4. جلب سندات الدفع الصادرة للمورد
     const payments = await prisma.payment.findMany({
       where: { 
         vendorId,
@@ -274,102 +285,120 @@ export async function getVendorLedger(vendorId: string) {
 
     const ledger: any[] = []
 
-    // ✅ حساب إجمالي المشتريات من المنتجات (سطر واحد)
-    let productsTotal = 0
-    let totalQuantity = 0
-    
-    products.forEach(p => {
-      const amount = p.stockQty * p.cost
-      productsTotal += amount
-      totalQuantity += p.stockQty
-    })
-
-    console.log('💰 Products Total:', productsTotal)
-    console.log('📦 Total Quantity:', totalQuantity)
-
-    // ✅ إضافة سطر واحد إجمالي للمشتريات
+    // ✅ إعادة إدراج سطر إجمالي رصيد المخزون الافتتاحي أولاً لحفظ المديونية القديمة
     if (productsTotal > 0) {
       ledger.push({
+        id: 'initial-products-stock',
         type: 'PURCHASE',
-        date: new Date('2020-01-01'), // تاريخ رمزي
+        date: new Date('2020-01-01'), // تاريخ رمزي في بداية الكشف
         reference: `مشتريات أصناف`,
-        description: `إجمالي قيمة المخزون (${products.length} صنف، ${totalQuantity} قطعة)`,
+        description: `إجمالي قيمة رصيد المخزون الافتتاحي (${products.length} صنف، ${totalQuantity} قطعة)`,
         debit: 0,
         credit: productsTotal,
-        productName: null,
         quantity: totalQuantity,
         user: 'النظام',
         isFromProducts: true,
       })
     }
 
-    // إضافة حركات VendorTransaction (فواتير مسجلة)
+    // 5. تجميع حركات الفواتير (كل فاتورة برقم مرجع في سطر مالي واحد نظيف)
+    const groupedByReference = new Map<string, any>()
+
     transactions.forEach(t => {
-      if (t.type === 'PURCHASE') {
-        ledger.push({
-          type: 'PURCHASE',
+      const refKey = t.reference ? `${t.type}_${t.reference}` : `single_${t.id}`
+
+      if (groupedByReference.has(refKey)) {
+        const existing = groupedByReference.get(refKey)
+        existing.amount += t.amount
+        existing.quantity = (existing.quantity || 0) + (t.quantity || 0)
+      } else {
+        groupedByReference.set(refKey, {
+          id: t.id,
+          type: t.type,
           date: t.createdAt,
-          reference: t.reference || `فاتورة شراء`,
-          description: t.description || 'فاتورة شراء من المورد',
-          debit: 0,
-          credit: t.amount,
-          productName: t.product ? `${t.product.modelNo} - ${t.product.color}` : null,
-          quantity: t.quantity,
-          user: t.user?.name || 'غير معروف',
-        })
-      } else if (t.type === 'RETURN') {
-        ledger.push({
-          type: 'RETURN',
-          date: t.createdAt,
-          reference: t.reference || `مرتجع للمورد`,
-          description: t.description || 'مرتجع للمورد',
-          debit: t.amount,
-          credit: 0,
-          productName: t.product ? `${t.product.modelNo} - ${t.product.color}` : null,
-          quantity: t.quantity,
+          reference: t.reference || (t.type === 'PURCHASE' ? 'فاتورة شراء' : 'مرتجع للمورد'),
+          description: t.description || (t.type === 'PURCHASE' ? 'فاتورة مشتريات' : 'مرتجع للمورد'),
+          amount: t.amount,
+          quantity: t.quantity || null,
           user: t.user?.name || 'غير معروف',
         })
       }
     })
 
-    // إضافة سندات الدفع
+    // إضافة الفواتير المجمعة لكشف الحساب
+    groupedByReference.forEach(t => {
+      if (t.type === 'PURCHASE') {
+        ledger.push({
+          id: t.id,
+          type: 'PURCHASE',
+          date: t.date,
+          reference: t.reference,
+          description: t.description,
+          debit: 0,
+          credit: t.amount,
+          quantity: t.quantity,
+          user: t.user,
+          isFromProducts: false,
+        })
+      } else if (t.type === 'RETURN') {
+        ledger.push({
+          id: t.id,
+          type: 'RETURN',
+          date: t.date,
+          reference: t.reference,
+          description: t.description,
+          debit: t.amount,
+          credit: 0,
+          quantity: t.quantity,
+          user: t.user,
+          isFromProducts: false,
+        })
+      }
+    })
+
+    // 6. إضافة سندات الدفع
     payments.forEach(p => {
       ledger.push({
+        id: p.id,
         type: 'PAYMENT',
         date: p.createdAt,
         reference: `سند دفع #${p.receiptNo}`,
         description: p.description || 'دفع للمورد',
         debit: p.amount,
         credit: 0,
-        productName: null,
         quantity: null,
         user: p.user?.name || 'غير معروف',
         safe: p.safe?.name || 'غير محدد',
+        isFromProducts: false,
       })
     })
 
-    // ترتيب حسب التاريخ
+    // 7. ترتيب السطور تاريخياً
     ledger.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-    // حساب الرصيد التراكمي
+    // 8. حساب الرصيد التراكمي
     let runningBalance = 0
     const ledgerWithBalance = ledger.map(t => {
-      runningBalance += (t.credit - t.debit)
+      runningBalance += (Number(t.credit || 0) - Number(t.debit || 0))
       return { ...t, balance: runningBalance }
     })
 
-    // الحسابات الإجمالية
+    // 9. المجاميع الشاملة
     const totalPurchasesFromProducts = productsTotal
     const totalPurchasesFromInvoices = ledger
       .filter(t => t.type === 'PURCHASE' && !t.isFromProducts)
-      .reduce((sum, t) => sum + t.credit, 0)
-    
+      .reduce((sum, t) => sum + (Number(t.credit) || 0), 0)
+
+    const totalPurchases = totalPurchasesFromProducts + totalPurchasesFromInvoices
+    const totalReturns = ledger.filter(t => t.type === 'RETURN').reduce((sum, t) => sum + (Number(t.debit) || 0), 0)
+    const totalPayments = ledger.filter(t => t.type === 'PAYMENT').reduce((sum, t) => sum + (Number(t.debit) || 0), 0)
+
     const summary = {
       totalPurchasesFromProducts,
       totalPurchasesFromInvoices,
-      totalPurchases: totalPurchasesFromProducts + totalPurchasesFromInvoices,
-      totalReturns: ledger.filter(t => t.type === 'RETURN').reduce((sum, t) => sum + t.debit, 0),
-      totalPayments: ledger.filter(t => t.type === 'PAYMENT').reduce((sum, t) => sum + t.debit, 0),
+      totalPurchases,
+      totalReturns,
+      totalPayments,
       currentBalance: runningBalance,
       productsCount: products.length,
     }

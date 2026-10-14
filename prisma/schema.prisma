@@ -36,9 +36,9 @@ model User {
   returns             ReturnOrder[]
   createdAt           DateTime              @default(now())
   
-  // العلاقات الجديدة
   vendorTransactions  VendorTransaction[]
-  employeeTransactions EmployeeTransaction[] // <--- السطر الجديد هنا
+  employeeTransactions EmployeeTransaction[]
+  purchaseInvoices    PurchaseInvoice[]
 }
 
 model Customer {
@@ -54,7 +54,7 @@ model Customer {
 }
 
 // =======================================
-// ✅ نموذج الموردين (جديد)
+// نموذج الموردين
 // =======================================
 
 model Vendor {
@@ -65,19 +65,19 @@ model Vendor {
   phone2      String?
   address     String?
   notes       String?
-  source      String   @default("MANUAL") // MANUAL, IMPORT
+  source      String   @default("MANUAL")
   
-  // العلاقات
-  products    Product[]
-  payments    Payment[]
-  transactions VendorTransaction[]
+  products         Product[]
+  payments         Payment[]
+  transactions     VendorTransaction[]
+  purchaseInvoices PurchaseInvoice[]
   
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
 
 // =======================================
-// ✅ حركات المورد - دفتر الأستاذ (جديد)
+// حركات المورد - دفتر الأستاذ
 // =======================================
 
 model VendorTransaction {
@@ -85,12 +85,11 @@ model VendorTransaction {
   vendorId    String
   vendor      Vendor   @relation(fields: [vendorId], references: [id])
   
-  type        String   // PURCHASE (استلام بضاعة), PAYMENT (دفع), RETURN (مرتجع للمورد)
+  type        String   // PURCHASE, PAYMENT, RETURN
   amount      Float
   description String?
   reference   String?  // رقم الفاتورة أو السند
   
-  // ربط اختياري بالمنتج
   productId   String?
   product     Product? @relation(fields: [productId], references: [id])
   quantity    Int?
@@ -124,6 +123,7 @@ model Product {
   vendorId         String?
   vendorRef        Vendor?     @relation(fields: [vendorId], references: [id])
   vendorTransactions VendorTransaction[]
+  purchaseInvoiceItems PurchaseInvoiceItem[]
 
   @@unique([modelNo, color])
 }
@@ -135,9 +135,10 @@ model Safe {
   payments            Payment[]             @relation("SourceSafe")
   incomingTransfers   Payment[]             @relation("TargetSafe")
   returns             ReturnOrder[]
+  purchaseInvoices    PurchaseInvoice[]
   createdAt           DateTime              @default(now())
   
-  employeeTransactions EmployeeTransaction[] // <--- السطر الجديد هنا
+  employeeTransactions EmployeeTransaction[]
 }
 
 // ==================== الأوردرات ====================
@@ -232,17 +233,14 @@ model ReturnOrder {
   
   items             ReturnItem[]
   
-  // المبالغ
   totalRefund       Float         @default(0)
   depositRefunded   Float         @default(0)
   exchangeAmount    Float         @default(0)
   
-  // طريقة الاسترداد
   refundMethod      String        @default("CASH")
   safeId            String?
   safe              Safe?         @relation(fields: [safeId], references: [id])
   
-  // لو استبدال - الأوردر الجديد
   newOrderId        String?
   newOrder          Order?        @relation("ExchangeNewOrder", fields: [newOrderId], references: [id])
   
@@ -260,7 +258,6 @@ model ReturnItem {
   returnOrderId       String
   returnOrder         ReturnOrder   @relation(fields: [returnOrderId], references: [id], onDelete: Cascade)
   
-  // الصنف المرتجع
   orderItemId         String
   orderItem           OrderItem     @relation(fields: [orderItemId], references: [id])
   productId           String
@@ -269,7 +266,6 @@ model ReturnItem {
   unitPrice           Float
   refundAmount        Float
   
-  // لو استبدال - الصنف الجديد
   exchangedProductId  String?
   exchangedProduct    Product?      @relation("ExchangedProduct", fields: [exchangedProductId], references: [id])
   exchangedQty        Int           @default(0)
@@ -361,7 +357,8 @@ model WarehouseSyncRecord {
   @@index([syncOperationId])
 }
 
-// Employee and Payroll Management
+// ==================== الموظفين والرواتب ====================
+
 model Employee {
   id            String   @id @default(cuid())
   name          String   @unique
@@ -389,4 +386,53 @@ model EmployeeTransaction {
   
   transactionDate DateTime @default(now())
   createdAt       DateTime @default(now())
+}
+
+// ==================== نظام فواتير المشتريات المخصص (جديد) ====================
+
+model PurchaseInvoice {
+  id            String                @id @default(cuid())
+  invoiceNo     String                @unique
+  invoiceType   String                @default("PURCHASE") // PURCHASE, RETURN
+  paymentStatus String                @default("CREDIT")   // CREDIT, CASH
+  date          DateTime              @default(now())
+  totalAmount   Float                 @default(0)
+  notes         String?
+  
+  vendorId      String
+  vendor        Vendor                @relation(fields: [vendorId], references: [id])
+
+  safeId        String?
+  safe          Safe?                 @relation(fields: [safeId], references: [id])
+
+  userId        String
+  user          User                  @relation(fields: [userId], references: [id])
+
+  items         PurchaseInvoiceItem[]
+
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([invoiceNo])
+  @@index([vendorId])
+  @@index([date])
+}
+
+model PurchaseInvoiceItem {
+  id          String          @id @default(cuid())
+  invoiceId   String
+  invoice     PurchaseInvoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  productId   String
+  product     Product         @relation(fields: [productId], references: [id])
+
+  quantity    Int
+  cost        Float
+  price       Float           @default(0)
+  description String?
+
+  createdAt   DateTime        @default(now())
+
+  @@index([invoiceId])
+  @@index([productId])
 }
