@@ -220,7 +220,7 @@ export async function getVendorBalance(vendorId: string) {
 }
 
 // =========================================================================
-// 8. جلب كشف حساب المورد (مع احتساب رصيد الأصناف الأولية + الفواتير المجمعة)
+// 8. جلب كشف حساب المورد (دفتر الأستاذ) - شامل الشيكات والمدفوعات والمخزون
 // =========================================================================
 export async function getVendorLedger(vendorId: string) {
   try {
@@ -232,7 +232,7 @@ export async function getVendorLedger(vendorId: string) {
       return { success: false, error: 'المورد غير موجود' }
     }
 
-    // 1. جلب الأصناف المربوطة بالمورد (سواء بالمعرف vendorId أو بالاسم vendor.name)
+    // 1. جلب الأصناف المربوطة بالمورد لحساب رصيد المخزون الافتتاحي
     const products = await prisma.product.findMany({
       where: {
         OR: [
@@ -250,7 +250,6 @@ export async function getVendorLedger(vendorId: string) {
       },
     })
 
-    // 2. حساب إجمالي رصيد المخزون الافتتاحي للأصناف المرفوعة
     let productsTotal = 0
     let totalQuantity = 0
 
@@ -260,7 +259,7 @@ export async function getVendorLedger(vendorId: string) {
       totalQuantity += (p.stockQty || 0)
     })
 
-    // 3. جلب حركات المورد من جدول VendorTransaction
+    // 2. جلب حركات المورد من جدول VendorTransaction
     const transactions = await prisma.vendorTransaction.findMany({
       where: { vendorId },
       include: {
@@ -270,7 +269,18 @@ export async function getVendorLedger(vendorId: string) {
       orderBy: { createdAt: 'asc' },
     })
 
-    // 4. جلب سندات الدفع الصادرة للمورد
+    // 3. جلب الشيكات المسجلة لهذا المورد من جدول Check مباشرة
+    const checks = await prisma.check.findMany({
+      where: { vendorId },
+      include: {
+        user: true,
+        collectedBank: true,
+        collectedSafe: true,
+      },
+      orderBy: { issueDate: 'asc' },
+    })
+
+    // 4. جلب سندات الدفع النقدية الصادرة للمورد من الخزنة
     const payments = await prisma.payment.findMany({
       where: { 
         vendorId,
@@ -285,12 +295,12 @@ export async function getVendorLedger(vendorId: string) {
 
     const ledger: any[] = []
 
-    // ✅ إعادة إدراج سطر إجمالي رصيد المخزون الافتتاحي أولاً لحفظ المديونية القديمة
+    // أ. إضافة سطر رصيد المخزون الافتتاحي
     if (productsTotal > 0) {
       ledger.push({
         id: 'initial-products-stock',
         type: 'PURCHASE',
-        date: new Date('2020-01-01'), // تاريخ رمزي في بداية الكشف
+        date: new Date('2020-01-01'),
         reference: `مشتريات أصناف`,
         description: `إجمالي قيمة رصيد المخزون الافتتاحي (${products.length} صنف، ${totalQuantity} قطعة)`,
         debit: 0,
@@ -301,7 +311,7 @@ export async function getVendorLedger(vendorId: string) {
       })
     }
 
-    // 5. تجميع حركات الفواتير (كل فاتورة برقم مرجع في سطر مالي واحد نظيف)
+    // ب. تجميع حركات الفواتير والمدفوعات من VendorTransaction
     const groupedByReference = new Map<string, any>()
 
     transactions.forEach(t => {
@@ -316,8 +326,8 @@ export async function getVendorLedger(vendorId: string) {
           id: t.id,
           type: t.type,
           date: t.createdAt,
-          reference: t.reference || (t.type === 'PURCHASE' ? 'فاتورة شراء' : 'مرتجع للمورد'),
-          description: t.description || (t.type === 'PURCHASE' ? 'فاتورة مشتريات' : 'مرتجع للمورد'),
+          reference: t.reference || (t.type === 'PURCHASE' ? 'فاتورة شراء' : 'حركة مورد'),
+          description: t.description || (t.type === 'PURCHASE' ? 'فاتورة مشتريات' : 'حركة مورد'),
           amount: t.amount,
           quantity: t.quantity || null,
           user: t.user?.name || 'غير معروف',
@@ -325,7 +335,6 @@ export async function getVendorLedger(vendorId: string) {
       }
     })
 
-    // إضافة الفواتير المجمعة لكشف الحساب
     groupedByReference.forEach(t => {
       if (t.type === 'PURCHASE') {
         ledger.push({
@@ -353,11 +362,60 @@ export async function getVendorLedger(vendorId: string) {
           user: t.user,
           isFromProducts: false,
         })
+      } else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) {
+        // ✅ إضافة الشيكات والمدفوعات المسجلة في VendorTransaction
+        ledger.push({
+          id: t.id,
+          type: 'PAYMENT',
+          date: t.date,
+          reference: t.reference,
+          description: t.description,
+          debit: t.amount,
+          credit: 0,
+          quantity: null,
+          user: t.user,
+          safe: null,
+          isFromProducts: false,
+        })
       }
     })
 
-    // 6. إضافة سندات الدفع
+    // ج. التأكد من إدراج أي شيك من جدول Check لم يدرج مسبقاً
+    const existingReferences = new Set(ledger.map(l => l.reference))
+
+    checks.forEach(chk => {
+      const checkRefText = `شيك #${chk.checkNo}`
+      if (!existingReferences.has(checkRefText) && !existingReferences.has(chk.checkNo)) {
+        const isPayable = chk.type === 'PAYABLE'
+        const statusArabic = chk.status === 'COLLECTED' 
+          ? 'تم التحصيل بالبنك' 
+          : chk.status === 'BOUNCED' 
+          ? 'مرتد ومرفوض' 
+          : 'تحت الصرف بالمحفظة'
+
+        ledger.push({
+          id: chk.id,
+          type: 'PAYMENT',
+          date: chk.issueDate,
+          reference: checkRefText,
+          description: `${isPayable ? 'إصدار شيك دفع' : 'شيك قبض'} #${chk.checkNo} مسحوب على بنك ${chk.drawnBank} (استحقاق: ${new Date(chk.dueDate).toLocaleDateString('ar-EG')}) [${statusArabic}]`,
+          debit: isPayable ? chk.amount : 0,
+          credit: isPayable ? 0 : chk.amount,
+          quantity: null,
+          user: chk.user?.name || 'غير معروف',
+          safe: chk.collectedBank ? chk.collectedBank.bankName : (chk.collectedSafe?.name || 'شيك بنكي'),
+          isFromProducts: false,
+          isCheck: true,
+          checkStatus: chk.status
+        })
+      }
+    })
+
+    // د. إضافة سندات الدفع النقدية مع منع التكرار
     payments.forEach(p => {
+      if (p.checkRefId || (p.description && p.description.includes('شيك #'))) {
+        return // تم حسابه مسبقاً من حركة الشيك
+      }
       ledger.push({
         id: p.id,
         type: 'PAYMENT',
@@ -373,17 +431,17 @@ export async function getVendorLedger(vendorId: string) {
       })
     })
 
-    // 7. ترتيب السطور تاريخياً
+    // ترتيب السطور تاريخياً
     ledger.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-    // 8. حساب الرصيد التراكمي
+    // حساب الرصيد التراكمي
     let runningBalance = 0
     const ledgerWithBalance = ledger.map(t => {
       runningBalance += (Number(t.credit || 0) - Number(t.debit || 0))
       return { ...t, balance: runningBalance }
     })
 
-    // 9. المجاميع الشاملة
+    // المجاميع الدقيقة
     const totalPurchasesFromProducts = productsTotal
     const totalPurchasesFromInvoices = ledger
       .filter(t => t.type === 'PURCHASE' && !t.isFromProducts)
@@ -391,6 +449,8 @@ export async function getVendorLedger(vendorId: string) {
 
     const totalPurchases = totalPurchasesFromProducts + totalPurchasesFromInvoices
     const totalReturns = ledger.filter(t => t.type === 'RETURN').reduce((sum, t) => sum + (Number(t.debit) || 0), 0)
+    
+    // إجمالي المدفوعات (تشمل الشيكات الصادرة وسندات الصرف النقدية)
     const totalPayments = ledger.filter(t => t.type === 'PAYMENT').reduce((sum, t) => sum + (Number(t.debit) || 0), 0)
 
     const summary = {

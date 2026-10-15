@@ -14,7 +14,9 @@ import {
   BanknotesIcon, 
   BuildingStorefrontIcon, 
   DocumentPlusIcon,
-  TagIcon 
+  TagIcon,
+  ScaleIcon,
+  DocumentDuplicateIcon
 } from '@heroicons/react/24/outline';
 
 const prisma = new PrismaClient();
@@ -69,7 +71,17 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               <TagIcon className="w-5 h-5" /> <span className="hidden lg:inline">إدارة العروض</span>
             </Link>
 
-            {/* زر تقرير البازار الجديد */}
+            {/* زر الأوراق المالية والشيكات الجديد */}
+            <Link href="/admin/financial-papers" className="px-3 py-2 rounded-xl bg-teal-600/20 text-teal-300 hover:bg-teal-600 hover:text-white transition-colors flex items-center gap-2 border border-teal-500/30">
+              <DocumentDuplicateIcon className="w-5 h-5" /> <span className="hidden lg:inline">الأوراق المالية</span>
+            </Link>
+
+            {/* زر إدارة الجرد */}
+            <Link href="/admin/inventory-audits" className="px-3 py-2 rounded-xl bg-cyan-600/20 text-cyan-300 hover:bg-cyan-600 hover:text-white transition-colors flex items-center gap-2 border border-cyan-500/30">
+              <ScaleIcon className="w-5 h-5" /> <span className="hidden lg:inline">إدارة الجرد</span>
+            </Link>
+
+            {/* زر تقرير البازار */}
             <Link href="/admin/reports/bazaar" className="px-3 py-2 rounded-xl bg-amber-600/20 text-amber-300 hover:bg-amber-600 hover:text-white transition-colors flex items-center gap-2 border border-amber-500/30">
               <span>🎪</span> <span className="hidden lg:inline">تقرير البازار</span>
             </Link>

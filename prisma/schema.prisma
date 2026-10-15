@@ -39,6 +39,8 @@ model User {
   vendorTransactions  VendorTransaction[]
   employeeTransactions EmployeeTransaction[]
   purchaseInvoices    PurchaseInvoice[]
+  inventoryAudits     InventoryAudit[]
+  checks              Check[]
 }
 
 model Customer {
@@ -51,6 +53,7 @@ model Customer {
   source    String    @default("ADMIN")
   orders    Order[]
   payments  Payment[]
+  checks    Check[]
 }
 
 // =======================================
@@ -71,6 +74,7 @@ model Vendor {
   payments         Payment[]
   transactions     VendorTransaction[]
   purchaseInvoices PurchaseInvoice[]
+  checks           Check[]
   
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -85,10 +89,10 @@ model VendorTransaction {
   vendorId    String
   vendor      Vendor   @relation(fields: [vendorId], references: [id])
   
-  type        String   // PURCHASE, PAYMENT, RETURN
+  type        String   // PURCHASE, PAYMENT, RETURN, CHECK_PAYABLE, CHECK_RECEIVABLE
   amount      Float
   description String?
-  reference   String?  // رقم الفاتورة أو السند
+  reference   String?  // رقم الفاتورة أو رقم الشيك
   
   productId   String?
   product     Product? @relation(fields: [productId], references: [id])
@@ -124,6 +128,7 @@ model Product {
   vendorRef        Vendor?     @relation(fields: [vendorId], references: [id])
   vendorTransactions VendorTransaction[]
   purchaseInvoiceItems PurchaseInvoiceItem[]
+  inventoryAuditItems  InventoryAuditItem[]
 
   @@unique([modelNo, color])
 }
@@ -136,6 +141,7 @@ model Safe {
   incomingTransfers   Payment[]             @relation("TargetSafe")
   returns             ReturnOrder[]
   purchaseInvoices    PurchaseInvoice[]
+  collectedChecks     Check[]               @relation("SafeCollectedChecks")
   createdAt           DateTime              @default(now())
   
   employeeTransactions EmployeeTransaction[]
@@ -217,6 +223,8 @@ model Payment {
   
   vendorId     String?
   vendor       Vendor?  @relation(fields: [vendorId], references: [id])
+
+  checkRefId   String?
 }
 
 // ==================== نظام المرتجعات ====================
@@ -388,7 +396,7 @@ model EmployeeTransaction {
   createdAt       DateTime @default(now())
 }
 
-// ==================== نظام فواتير المشتريات المخصص (جديد) ====================
+// ==================== نظام فواتير المشتريات المخصص ====================
 
 model PurchaseInvoice {
   id            String                @id @default(cuid())
@@ -435,4 +443,137 @@ model PurchaseInvoiceItem {
 
   @@index([invoiceId])
   @@index([productId])
+}
+
+// ==================== نظام الجرد والمطابقة الفعلي ====================
+
+model InventoryAudit {
+  id             String               @id @default(cuid())
+  auditNo        Int                  @default(autoincrement())
+  title          String?
+  notes          String?
+  status         String               @default("PENDING")
+  
+  userId         String
+  user           User                 @relation(fields: [userId], references: [id])
+
+  items          InventoryAuditItem[]
+
+  reconciledAt   DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([auditNo])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model InventoryAuditItem {
+  id             String         @id @default(cuid())
+  auditId        String
+  audit          InventoryAudit @relation(fields: [auditId], references: [id], onDelete: Cascade)
+
+  productId      String
+  product        Product        @relation(fields: [productId], references: [id])
+
+  systemStock    Int
+  actualStock    Int
+  difference     Int
+  costAtAudit    Float          @default(0)
+
+  createdAt      DateTime       @default(now())
+
+  @@index([auditId])
+  @@index([productId])
+}
+
+// =========================================================================
+// ✅ نظام الأوراق المالية، الشيكات، والحسابات البنكية (جديد)
+// =========================================================================
+
+model BankAccount {
+  id            String            @id @default(cuid())
+  bankName      String            // اسم البنك (الأهلي، مصر، CIB...)
+  accountNumber String            // رقم الحساب البنكي
+  branch        String?           // الفرع
+  currency      String            @default("EGP")
+  balance       Float             @default(0) // الرصيد الدفتري للبنك
+  
+  checks        Check[]
+  transactions  BankTransaction[]
+
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@unique([bankName, accountNumber])
+}
+
+model Check {
+  id              String       @id @default(cuid())
+  checkNo         String       // رقم الشيك
+  type            String       // 'RECEIVABLE' (أوراق قبض - شيك وارد), 'PAYABLE' (أوراق دفع - شيك صادر)
+  status          String       @default("PORTFOLIO") 
+  // الحالات:
+  // PORTFOLIO = في المحفظة / تحت التحصيل
+  // COLLECTED = تم التحصيل وإيداع/صرف المبلغ بالبنك أو الخزنة
+  // BOUNCED   = شيك مرفوض / مرتد
+  // CANCELLED = ملغي
+
+  amount          Float
+  currency        String       @default("EGP")
+  
+  drawnBank       String       // البنك المسحوب عليه الشيك
+  issueDate       DateTime     // تاريخ التحرير / كتابة الشيك
+  dueDate         DateTime     // تاريخ الاستحقاق
+  collectedDate   DateTime?    // تاريخ التحصيل الفعلي
+  bouncedReason   String?      // سبب الرفض إن وجد
+  notes           String?
+
+  // الطرف المتعامل (عميل أو مورد)
+  partyType       String       // 'CUSTOMER' | 'VENDOR'
+  customerId      String?
+  customer        Customer?    @relation(fields: [customerId], references: [id])
+  vendorId        String?
+  vendor          Vendor?      @relation(fields: [vendorId], references: [id])
+
+  // جهة التحصيل (حساب بنكي أو خزنة)
+  collectedBankId String?
+  collectedBank   BankAccount? @relation(fields: [collectedBankId], references: [id])
+  collectedSafeId String?
+  collectedSafe   Safe?        @relation("SafeCollectedChecks", fields: [collectedSafeId], references: [id])
+
+  userId          String
+  user            User         @relation(fields: [userId], references: [id])
+
+  bankTransactions BankTransaction[]
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([checkNo])
+  @@index([type])
+  @@index([status])
+  @@index([dueDate])
+  @@index([customerId])
+  @@index([vendorId])
+}
+
+model BankTransaction {
+  id            String       @id @default(cuid())
+  bankAccountId String
+  bankAccount   BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  
+  type          String       // DEPOSIT (إيداع/تحصيل), WITHDRAWAL (سحب/صرف), SETTLEMENT (تسوية)
+  amount        Float
+  description   String?
+  reference     String?      // رقم الشيك أو إشعار البنك
+  
+  checkId       String?
+  check         Check?       @relation(fields: [checkId], references: [id], onDelete: SetNull)
+
+  transactionDate DateTime   @default(now())
+  createdAt       DateTime   @default(now())
+
+  @@index([bankAccountId])
+  @@index([type])
 }

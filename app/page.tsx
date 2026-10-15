@@ -157,7 +157,7 @@ export default async function Home() {
             <TodaySummaryButton />
           )}
 
-          {/* الكروت الرئيسية للطلب (أوردر جديد عادي + فاتورة البازار السريعة للجميع) */}
+          {/* الكروت الرئيسية للطلب (أوردر عادي + فاتورة بازار سريعة) */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             
             {/* Primary Action 1 - New Order العادي */}
@@ -217,7 +217,7 @@ export default async function Home() {
 
           </div>
 
-          {/* Quick Actions Grid */}
+          {/* Quick Actions Grid - أيقونات الخدمات السريعة (متاح فيها جرد المخزن للجميع) */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             
             {/* Orders List */}
@@ -234,6 +234,24 @@ export default async function Home() {
                 </span>
                 <div className="text-gray-400 text-xs mt-1">
                   عرض السجل
+                </div>
+              </Link>
+            </div>
+
+            {/* أيقونة جرد المخزن السريع (متاحة للجميع: موظف، محاسب، أدمن) */}
+            <div className="scale-in" style={{ animationDelay: '0.22s' }}>
+              <Link 
+                href="/inventory/audit" 
+                className="action-card block glass rounded-2xl p-6 text-center group border border-cyan-500/40 hover:border-cyan-400"
+              >
+                <div className="bg-gradient-to-br from-cyan-500/20 to-blue-600/20 w-16 h-16 mx-auto rounded-2xl flex items-center justify-center mb-3 group-hover:scale-110 group-hover:rotate-6 transition-all duration-300">
+                  <span className="text-3xl">📋</span>
+                </div>
+                <span className="text-white font-bold text-sm md:text-base">
+                  جرد المخزن
+                </span>
+                <div className="text-cyan-300 text-xs mt-1">
+                  جرد سريع بالموبايل
                 </div>
               </Link>
             </div>
