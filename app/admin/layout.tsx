@@ -16,7 +16,10 @@ import {
   DocumentPlusIcon,
   TagIcon,
   ScaleIcon,
-  DocumentDuplicateIcon
+  DocumentDuplicateIcon,
+  CreditCardIcon,
+  BuildingOffice2Icon,
+  ChartPieIcon
 } from '@heroicons/react/24/outline';
 
 const prisma = new PrismaClient();
@@ -36,6 +39,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     redirect("/");
   }
 
+  // حماية مشددة: مسموح فقط للمدير وصاحب العمل والمحاسب
   const allowedRoles = ["ADMIN", "OWNER", "ACCOUNTANT"];
   if (!allowedRoles.includes(user.role)) {
     redirect("/");
@@ -49,9 +53,9 @@ export default async function AdminLayout({ children }: { children: React.ReactN
           <div className="text-xl font-bold flex items-center gap-3">
             <span className="text-2xl">🛡️</span>
             <div>
-                <span className="block leading-none">لوحة التحكم</span>
+                <span className="block leading-none">لوحة التحكم المحاسبية</span>
                 <span className="text-[10px] font-normal text-slate-400">
-                  مرحباً بك، {user.name} | صلاحيتك: {user.role}
+                  مرحباً بك، {user.name} | الصلاحية: {user.role === 'ADMIN' ? 'مدير عام' : user.role === 'OWNER' ? 'صاحب الشركة' : 'محاسب عام'}
                 </span>
             </div>
           </div>
@@ -61,40 +65,49 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               <HomeIcon className="w-5 h-5" /> <span className="hidden lg:inline">الرئيسية</span>
             </Link>
             
-            {/* زر فاتورة المشتريات */}
+            {/* القوائم المالية والأرباح (جديد) */}
+            <Link href="/admin/reports/financial" className="px-3 py-2 rounded-xl bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600 hover:text-white transition-colors flex items-center gap-2 border border-emerald-500/40">
+              <ChartPieIcon className="w-5 h-5" /> <span className="hidden lg:inline">القوائم المالية</span>
+            </Link>
+
+            {/* فاتورة المشتريات */}
             <Link href="/admin/purchases/new" className="px-3 py-2 rounded-xl bg-purple-600/30 text-purple-300 hover:bg-purple-600 hover:text-white transition-colors flex items-center gap-2 border border-purple-500/40">
               <DocumentPlusIcon className="w-5 h-5" /> <span className="hidden lg:inline">فاتورة مشتريات</span>
             </Link>
 
-            {/* زر إدارة العروض */}
-            <Link href="/admin/offers" className="px-3 py-2 rounded-xl bg-pink-600/20 text-pink-300 hover:bg-pink-600 hover:text-white transition-colors flex items-center gap-2 border border-pink-500/30">
-              <TagIcon className="w-5 h-5" /> <span className="hidden lg:inline">إدارة العروض</span>
-            </Link>
-
-            {/* زر الأوراق المالية والشيكات الجديد */}
+            {/* الأوراق المالية والشيكات */}
             <Link href="/admin/financial-papers" className="px-3 py-2 rounded-xl bg-teal-600/20 text-teal-300 hover:bg-teal-600 hover:text-white transition-colors flex items-center gap-2 border border-teal-500/30">
-              <DocumentDuplicateIcon className="w-5 h-5" /> <span className="hidden lg:inline">الأوراق المالية</span>
+              <DocumentDuplicateIcon className="w-5 h-5" /> <span className="hidden lg:inline">الشيكات</span>
             </Link>
 
-            {/* زر إدارة الجرد */}
+            {/* الدائنون والمدينون والقروض */}
+            <Link href="/admin/debtors-creditors" className="px-3 py-2 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white transition-colors flex items-center gap-2 border border-indigo-500/30">
+              <CreditCardIcon className="w-5 h-5" /> <span className="hidden lg:inline">الدائنون والمدينون</span>
+            </Link>
+
+            {/* الأصول الثابتة */}
+            <Link href="/admin/assets" className="px-3 py-2 rounded-xl bg-emerald-600/20 text-emerald-300 hover:bg-emerald-600 hover:text-white transition-colors flex items-center gap-2 border border-emerald-500/30">
+              <BuildingOffice2Icon className="w-5 h-5" /> <span className="hidden lg:inline">الأصول الثابتة</span>
+            </Link>
+
+            {/* إدارة الجرد */}
             <Link href="/admin/inventory-audits" className="px-3 py-2 rounded-xl bg-cyan-600/20 text-cyan-300 hover:bg-cyan-600 hover:text-white transition-colors flex items-center gap-2 border border-cyan-500/30">
               <ScaleIcon className="w-5 h-5" /> <span className="hidden lg:inline">إدارة الجرد</span>
             </Link>
 
-            {/* زر تقرير البازار */}
-            <Link href="/admin/reports/bazaar" className="px-3 py-2 rounded-xl bg-amber-600/20 text-amber-300 hover:bg-amber-600 hover:text-white transition-colors flex items-center gap-2 border border-amber-500/30">
-              <span>🎪</span> <span className="hidden lg:inline">تقرير البازار</span>
+            {/* إدارة العروض */}
+            <Link href="/admin/offers" className="px-3 py-2 rounded-xl hover:bg-slate-700 hover:text-yellow-400 transition-colors flex items-center gap-2">
+              <TagIcon className="w-5 h-5" /> <span className="hidden lg:inline">العروض</span>
+            </Link>
+
+            {/* تقرير البازار */}
+            <Link href="/admin/reports/bazaar" className="px-3 py-2 rounded-xl hover:bg-slate-700 hover:text-amber-400 transition-colors flex items-center gap-1.5">
+              <span>🎪</span> <span className="hidden lg:inline">البازار</span>
             </Link>
 
             <Link href="/admin/vendors" className="px-3 py-2 rounded-xl hover:bg-slate-700 hover:text-yellow-400 transition-colors flex items-center gap-2">
               <BuildingStorefrontIcon className="w-5 h-5" /> <span className="hidden lg:inline">الموردين</span>
             </Link>
-
-            {user.role !== 'ACCOUNTANT' && (
-              <Link href="/admin/users" className="px-3 py-2 rounded-xl hover:bg-slate-700 hover:text-yellow-400 transition-colors flex items-center gap-2">
-                <UsersIcon className="w-5 h-5" /> <span className="hidden lg:inline">الموظفين</span>
-              </Link>
-            )}
             
             <Link href="/admin/customers" className="px-3 py-2 rounded-xl hover:bg-slate-700 hover:text-yellow-400 transition-colors flex items-center gap-2">
               <UserGroupIcon className="w-5 h-5" /> <span className="hidden lg:inline">العملاء</span>
@@ -110,7 +123,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
 
             {user.role !== 'EMPLOYEE' && (
               <Link href="/admin/cash-management" className="px-3 py-2 rounded-xl hover:bg-slate-700 hover:text-yellow-400 transition-colors flex items-center gap-2">
-                <BanknotesIcon className="w-5 h-5" /> <span className="hidden lg:inline">إدارة النقدية</span>
+                <BanknotesIcon className="w-5 h-5" /> <span className="hidden lg:inline">الخزينة</span>
               </Link>
             )}
 

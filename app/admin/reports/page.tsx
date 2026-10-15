@@ -56,12 +56,21 @@ export default function ReportsPage() {
         </div>
         
         <div className="flex flex-wrap gap-2 w-full md:w-auto print:hidden">
-            {/* رابط تقرير البازار السريع */}
+            {/* رابط القوائم المالية والأرباح الختامية */}
+            <Link
+              href="/admin/reports/financial"
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-4 rounded-2xl font-black shadow-xl transition-all transform active:scale-95 flex items-center justify-center gap-2"
+            >
+              <span className="text-xl">📈</span>
+              <span>القوائم المالية والأرباح</span>
+            </Link>
+
+            {/* رابط تقرير البازار */}
             <Link
               href="/admin/reports/bazaar"
               className="bg-amber-600 hover:bg-amber-700 text-white px-6 py-4 rounded-2xl font-black shadow-xl transition-all transform active:scale-95 flex items-center justify-center gap-2"
             >
-              <span>🎪</span>
+              <span className="text-xl">🎪</span>
               <span>تقرير البازار</span>
             </Link>
 

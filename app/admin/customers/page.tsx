@@ -15,7 +15,7 @@ import * as XLSX from 'xlsx';
 export default function CustomersPage() {
   const [customers, setCustomers] = useState<any[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [searchTerm, setSearchTerm] = useState(''); // 👈 الميزة الجديدة: حالة البحث اللايف
+  const [searchTerm, setSearchTerm] = useState('');
 
   // Form States
   const [code, setCode] = useState('');
@@ -33,7 +33,7 @@ export default function CustomersPage() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadStatusText, setUploadStatusText] = useState('');
 
-  // 👇 Deleting State (للمؤشر)
+  // Deleting State
   const [isDeleting, setIsDeleting] = useState(false);
   const [deleteStatusText, setDeleteStatusText] = useState('');
 
@@ -43,12 +43,12 @@ export default function CustomersPage() {
 
   const refreshCustomers = () => {
     getAdminCustomers().then(res => {
-        setCustomers(res);
+        setCustomers(res || []);
         setSelectedIds([]);
     });
   };
 
-  // 👇 الميزة الجديدة: منطق تصفية العملاء (Live Search) 👇
+  // فلترة العملاء بالبحث الحي
   const filteredCustomers = useMemo(() => {
     return customers.filter(c => 
         c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
@@ -58,11 +58,39 @@ export default function CustomersPage() {
     );
   }, [customers, searchTerm]);
 
+  // إحصائيات وإجماليات أرصدة العملاء المعروضين
+  const balancesSummary = useMemo(() => {
+    // إجمالي مديونيات العملاء (عليهم لنا)
+    const totalDebtors = filteredCustomers
+      .filter(c => (Number(c.balance) || 0) > 0)
+      .reduce((sum, c) => sum + (Number(c.balance) || 0), 0);
+
+    // إجمالي أرصدة العملاء الدائنة (لهم عندنا)
+    const totalCreditors = filteredCustomers
+      .filter(c => (Number(c.balance) || 0) < 0)
+      .reduce((sum, c) => sum + Math.abs(Number(c.balance) || 0), 0);
+
+    // صافي رصيد العملاء الإجمالي
+    const netReceivables = totalDebtors - totalCreditors;
+
+    const countDebtors = filteredCustomers.filter(c => (Number(c.balance) || 0) > 0).length;
+    const countCreditors = filteredCustomers.filter(c => (Number(c.balance) || 0) < 0).length;
+    const countSettled = filteredCustomers.filter(c => (Number(c.balance) || 0) === 0).length;
+
+    return {
+      totalDebtors,
+      totalCreditors,
+      netReceivables,
+      countDebtors,
+      countCreditors,
+      countSettled
+    };
+  }, [filteredCustomers]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name) return alert('الاسم مطلوب'); // الكود أصبح اختيارياً للتوليد التلقائي
+    if (!name) return alert('الاسم مطلوب');
 
-    // تم إضافة source: 'ADMIN' لأن الإضافة تتم من لوحة التحكم
     const res = await addCustomer({ code, name, phone, phone2, address, source: 'ADMIN' });
     if (res.success) {
       alert('تمت إضافة العميل');
@@ -73,7 +101,7 @@ export default function CustomersPage() {
     }
   };
 
-  // --- Excel Logic (تمت استعادتها بالكامل) ---
+  // --- Excel Logic ---
   const downloadTemplate = () => {
     const templateData = [
         { code: "C101", name: "عميل 1", phone: "010xxxx", phone2: "011xxxx", address: "العنوان" },
@@ -128,7 +156,7 @@ export default function CustomersPage() {
     reader.readAsBinaryString(file);
   };
 
-  // --- Delete Logic (تمت استعادتها بالكامل) ---
+  // --- Delete Logic ---
   const handleDelete = async (id: string) => {
     if (confirm('حذف هذا العميل؟')) {
       setIsDeleting(true); 
@@ -174,7 +202,6 @@ export default function CustomersPage() {
     }
   };
 
-  // Checkbox Logic
   const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
       if(e.target.checked) setSelectedIds(filteredCustomers.map(c => c.id));
       else setSelectedIds([]);
@@ -205,9 +232,9 @@ export default function CustomersPage() {
   };
 
   return (
-    <div className="space-y-6 relative pb-20" dir="rtl">
+    <div className="space-y-6 relative pb-40 font-sans" dir="rtl">
        
-       {/* 👇 Full Screen Loader Overlay (تم الحفاظ عليه) */}
+       {/* Full Screen Loader */}
        {isDeleting && (
             <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex flex-col justify-center items-center text-white">
                 <div className="w-16 h-16 border-4 border-t-transparent border-white rounded-full animate-spin mb-4"></div>
@@ -217,14 +244,13 @@ export default function CustomersPage() {
        )}
 
        {/* Header */}
-       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 rounded shadow-sm">
+       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 rounded-xl shadow-sm border border-gray-100">
         <div>
             <h1 className="text-xl md:text-2xl font-bold text-gray-800">إدارة العملاء</h1>
             <p className="text-xs text-blue-600 font-bold mt-1">العدد المعروض: {filteredCustomers.length}</p>
         </div>
         
         <div className="flex flex-wrap gap-2 w-full md:w-auto">
-            {/* 👇 حقل البحث اللايف الجديد 👇 */}
             <div className="w-full md:w-64">
                 <input 
                     type="text" 
@@ -253,9 +279,9 @@ export default function CustomersPage() {
         </div>
       </div>
 
-      {/* Upload Section (تم الحفاظ عليه) */}
-      <div className="bg-indigo-50 p-4 rounded border border-indigo-200">
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-4">
+      {/* Upload Section */}
+      <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-200">
+          <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-2">
             <div className="w-full">
                 <h3 className="font-bold text-indigo-800 text-sm md:text-lg">📥 استيراد Excel</h3>
                 <div className="flex justify-between items-center mt-1">
@@ -279,11 +305,11 @@ export default function CustomersPage() {
       </div>
 
       {/* Form Adding */}
-      <form onSubmit={handleSubmit} className="bg-white p-4 rounded shadow space-y-4 border-t-4 border-blue-600">
+      <form onSubmit={handleSubmit} className="bg-white p-4 rounded-xl shadow space-y-4 border-t-4 border-blue-600">
         <h2 className="font-bold text-gray-700 text-sm border-b pb-2">إضافة عميل جديد (اترك الكود فارغاً للتوليد التلقائي)</h2>
         <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
           <div><label className="text-xs font-bold text-gray-500">الكود (اختياري)</label><input type="text" className="w-full border p-2 rounded bg-gray-50 focus:bg-white" value={code} onChange={e => setCode(e.target.value)} placeholder="تلقائي..." /></div>
-          <div><label className="text-xs font-bold text-gray-500">الاسم</label><input type="text" className="w-full border p-2 rounded focus:bg-white" value={name} onChange={e => setName(e.target.value)} required /></div>
+          <div><label className="text-xs font-bold text-gray-500">الاسم *</label><input type="text" className="w-full border p-2 rounded focus:bg-white" value={name} onChange={e => setName(e.target.value)} required /></div>
           <div><label className="text-xs font-bold text-gray-500">هاتف 1</label><input type="text" className="w-full border p-2 rounded focus:bg-white" value={phone} onChange={e => setPhone(e.target.value)} /></div>
           <div><label className="text-xs font-bold text-gray-500">هاتف 2</label><input type="text" className="w-full border p-2 rounded bg-yellow-50 focus:bg-white" value={phone2} onChange={e => setPhone2(e.target.value)} /></div>
           <div><label className="text-xs font-bold text-gray-500">العنوان</label><input type="text" className="w-full border p-2 rounded focus:bg-white" value={address} onChange={e => setAddress(e.target.value)} /></div>
@@ -291,7 +317,7 @@ export default function CustomersPage() {
         <button type="submit" disabled={isDeleting} className="bg-blue-600 text-white px-6 py-3 rounded font-bold w-full disabled:opacity-50 hover:bg-blue-700 transition">حفظ العميل</button>
       </form>
 
-      {/* --- Responsive List (Cards on Mobile, Table on Desktop) (تم الحفاظ عليها بالكامل) --- */}
+      {/* القائمة: جدول للديسكتوب وكروت للموبايل */}
       <div className="relative">
         
         {/* 1. Mobile View (Cards) */}
@@ -303,32 +329,27 @@ export default function CustomersPage() {
                     تحديد المعروض
                 </label>
             </div>
-            
-            {/* إشعار الألوان الجديد */}
-            <div className="px-2 text-[10px] font-bold text-purple-600">💡 اللون الأرجواني = عميل أضيف من شاشة البيع</div>
 
             {filteredCustomers.map(c => {
-                const isQuickAdd = c.source === 'QUICK'; // 👈 الميزة الجديدة: التحقق من المصدر
+                const isQuickAdd = c.source === 'QUICK';
+                const bal = Number(c.balance) || 0;
+
                 return (
-                    <div key={c.id} className={`bg-white p-4 rounded-lg shadow border-r-4 ${selectedIds.includes(c.id) ? 'border-r-indigo-500 bg-indigo-50' : isQuickAdd ? 'border-r-purple-500 bg-purple-50' : 'border-r-gray-300'}`}>
+                    <div key={c.id} className={`bg-white p-4 rounded-xl shadow border-r-4 ${selectedIds.includes(c.id) ? 'border-r-indigo-500 bg-indigo-50' : isQuickAdd ? 'border-r-purple-500 bg-purple-50' : 'border-r-gray-300'}`}>
                         <div className="flex justify-between items-start mb-2">
                             <div className="flex items-center gap-3">
                                 <input type="checkbox" className="w-5 h-5" checked={selectedIds.includes(c.id)} onChange={() => handleSelectOne(c.id)} />
                                 <div>
                                     <h3 className={`font-bold ${isQuickAdd ? 'text-purple-800' : 'text-gray-800'}`}>{c.name}</h3>
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 mt-0.5">
                                         <span className="text-xs bg-gray-200 px-2 py-0.5 rounded text-gray-600 font-mono">{c.code}</span>
                                         {isQuickAdd && <span className="text-[10px] bg-purple-600 text-white px-1 rounded">جديد ✨</span>}
                                     </div>
                                 </div>
                             </div>
-                            <div className="flex gap-2">
-                                <Link href={`/admin/reports/customer/${c.id}`} className="bg-purple-100 text-purple-600 p-2 rounded-full text-xs">📚</Link>
-                                <button onClick={() => handleEditClick(c)} className="bg-blue-100 text-blue-600 p-2 rounded-full text-xs">✏️</button>
-                                <button onClick={() => handleDelete(c.id)} className="bg-red-100 text-red-600 p-2 rounded-full text-xs">🗑️</button>
-                            </div>
                         </div>
-                        <div className="text-sm text-gray-600 space-y-1 pr-8 border-t pt-2 mt-2">
+
+                        <div className="text-sm text-gray-600 space-y-1 border-t pt-2 mt-2">
                             <div className="flex items-center gap-2">
                                 <span>📞</span>
                                 <span>{c.phone || '-'}</span>
@@ -339,70 +360,216 @@ export default function CustomersPage() {
                                 <span>{c.address || 'لا يوجد عنوان'}</span>
                             </div>
                         </div>
+
+                        {/* الرصيد الصافي وأزرار التحكم بجواره في الموبايل */}
+                        <div className="flex justify-between items-center border-t pt-3 mt-2">
+                            <div>
+                              <span className="text-[10px] text-gray-500 block">الرصيد الصافي:</span>
+                              <span className={`font-mono font-bold text-sm ${bal > 0 ? 'text-red-600' : bal < 0 ? 'text-emerald-700' : 'text-gray-500'}`}>
+                                {bal > 0 ? `${bal.toLocaleString()} ج.م (عليه)` : bal < 0 ? `${Math.abs(bal).toLocaleString()} ج.م (له)` : '0.00 (خالص)'}
+                              </span>
+                            </div>
+
+                            <div className="flex gap-1.5">
+                                <Link href={`/admin/reports/customer/${c.id}`} className="bg-purple-100 text-purple-700 px-2 py-1 rounded text-xs font-bold">
+                                  📚 كشف
+                                </Link>
+                                <button onClick={() => handleEditClick(c)} className="bg-blue-100 text-blue-600 px-2 py-1 rounded text-xs font-bold">
+                                  ✏️
+                                </button>
+                                <button onClick={() => handleDelete(c.id)} className="bg-red-100 text-red-600 px-2 py-1 rounded text-xs font-bold">
+                                  🗑️
+                                </button>
+                            </div>
+                        </div>
                     </div>
                 );
             })}
         </div>
 
-        {/* 2. Desktop View (Table) (تم الحفاظ عليها بالكامل) */}
-        <div className="hidden md:block bg-white rounded shadow overflow-hidden">
-            <div className="p-2 bg-purple-50 text-xs font-bold text-purple-700 border-b">
-                💡 العملاء باللون <span className="bg-purple-200 px-2 rounded">الأرجواني</span> هم من تمت إضافتهم من شاشات البيع (QUICK).
+        {/* 2. Desktop View (Table) */}
+        <div className="hidden md:block bg-white rounded-xl shadow overflow-hidden border border-gray-200">
+            <div className="p-2.5 bg-gray-50 border-b flex justify-between items-center text-xs text-gray-600 font-bold">
+                <span>العملاء المعروضون: {filteredCustomers.length}</span>
+                <span className="text-purple-700">💡 اللون الأرجواني = عملاء أضيفوا من شاشات البيع السريع</span>
             </div>
+
             <table className="w-full text-sm text-right">
-            <thead className="bg-gray-100">
+            <thead className="bg-gray-100 text-gray-700">
                 <tr>
-                <th className="p-3 w-10"><input type="checkbox" onChange={handleSelectAll} checked={filteredCustomers.length > 0 && selectedIds.length === filteredCustomers.length} /></th>
-                <th className="p-3">الكود</th>
-                <th className="p-3">الاسم</th>
-                <th className="p-3">هاتف 1</th>
-                <th className="p-3">هاتف 2</th>
-                <th className="p-3">العنوان</th>
-                <th className="p-3 text-center">تحكم</th>
+                  <th className="p-3 w-10 text-center"><input type="checkbox" onChange={handleSelectAll} checked={filteredCustomers.length > 0 && selectedIds.length === filteredCustomers.length} /></th>
+                  <th className="p-3 w-32">الكود</th>
+                  <th className="p-3">اسم العميل</th>
+                  <th className="p-3 w-32">هاتف 1</th>
+                  <th className="p-3 w-32">هاتف 2</th>
+                  <th className="p-3">العنوان</th>
+                  
+                  {/* عمود الرصيد الصافي الأخير للعميل بجوار التحكم مباشرة */}
+                  <th className="p-3 text-center w-40 bg-gray-200 font-bold text-gray-900 border-x border-gray-300">
+                    الرصيد الصافي الأخير
+                  </th>
+
+                  <th className="p-3 text-center w-52">تحكم</th>
                 </tr>
             </thead>
             <tbody>
-                {filteredCustomers.map(c => {
-                const isQuickAdd = c.source === 'QUICK'; // 👈 الميزة الجديدة
-                return (
-                    <tr key={c.id} className={`border-b hover:bg-gray-50 ${selectedIds.includes(c.id) ? 'bg-indigo-50' : isQuickAdd ? 'bg-purple-50' : ''}`}>
-                        <td className="p-3"><input type="checkbox" checked={selectedIds.includes(c.id)} onChange={() => handleSelectOne(c.id)} /></td>
-                        <td className={`p-3 font-bold ${isQuickAdd ? 'text-purple-700' : ''}`}>
-                            {c.code}
-                            {isQuickAdd && <span className="mr-2 text-[10px] bg-purple-600 text-white px-1 rounded">QUICK</span>}
-                        </td>
-                        <td className={`p-3 font-bold ${isQuickAdd ? 'text-purple-800' : ''}`}>{c.name}</td>
-                        <td className="p-3 font-mono">{c.phone}</td>
-                        <td className="p-3 text-gray-600 font-mono">{c.phone2}</td>
-                        <td className="p-3 text-xs">{c.address}</td>
-                        <td className="p-3 flex justify-center gap-2">
-                        <Link
-                            href={`/admin/reports/customer/${c.id}`}
-                            className="bg-purple-100 text-purple-700 px-3 py-1 rounded text-xs font-bold hover:bg-purple-200"
-                        >
-                            📚 كشف حساب
-                        </Link>
-                        <button onClick={() => handleEditClick(c)} className="text-blue-600 bg-blue-100 px-2 py-1 rounded">تعديل</button>
-                        <button onClick={() => handleDelete(c.id)} disabled={isDeleting} className="text-red-600 bg-red-100 px-2 py-1 rounded disabled:opacity-50">حذف</button>
-                        </td>
-                    </tr>
-                )})}
+                {filteredCustomers.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="p-12 text-center text-gray-500 font-bold">
+                      لا يوجد عملاء يطابقون البحث
+                    </td>
+                  </tr>
+                ) : (
+                  filteredCustomers.map(c => {
+                    const isQuickAdd = c.source === 'QUICK';
+                    const bal = Number(c.balance) || 0;
+
+                    return (
+                      <tr key={c.id} className={`border-b hover:bg-gray-50 transition ${selectedIds.includes(c.id) ? 'bg-indigo-50' : isQuickAdd ? 'bg-purple-50/70' : ''}`}>
+                          <td className="p-3 text-center"><input type="checkbox" checked={selectedIds.includes(c.id)} onChange={() => handleSelectOne(c.id)} /></td>
+                          <td className={`p-3 font-mono font-bold text-xs ${isQuickAdd ? 'text-purple-700' : 'text-gray-700'}`}>
+                              {c.code}
+                              {isQuickAdd && <span className="mr-1.5 text-[9px] bg-purple-600 text-white px-1 py-0.5 rounded">QUICK</span>}
+                          </td>
+                          <td className={`p-3 font-bold text-base ${isQuickAdd ? 'text-purple-900' : 'text-gray-900'}`}>{c.name}</td>
+                          <td className="p-3 font-mono text-xs">{c.phone || '-'}</td>
+                          <td className="p-3 text-gray-500 font-mono text-xs">{c.phone2 || '-'}</td>
+                          <td className="p-3 text-xs text-gray-600 truncate max-w-xs">{c.address || '-'}</td>
+
+                          {/* عرض الرصيد الصافي الأخير ملون بدقة */}
+                          <td className="p-3 text-center font-mono font-bold text-sm bg-gray-50/50 border-x border-gray-200">
+                            {bal > 0 ? (
+                              <span className="text-red-600 bg-red-50 border border-red-200 px-2.5 py-1 rounded-lg inline-block shadow-sm">
+                                {bal.toLocaleString()} ج.م <small className="text-[10px] font-bold text-red-500">(عليه)</small>
+                              </span>
+                            ) : bal < 0 ? (
+                              <span className="text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg inline-block shadow-sm">
+                                {Math.abs(bal).toLocaleString()} ج.م <small className="text-[10px] font-bold text-emerald-600">(له)</small>
+                              </span>
+                            ) : (
+                              <span className="text-gray-400 font-normal">
+                                0.00
+                              </span>
+                            )}
+                          </td>
+
+                          {/* أزرار التحكم بجوار الرصيد */}
+                          <td className="p-3 text-center">
+                            <div className="flex justify-center items-center gap-1.5">
+                              <Link
+                                  href={`/admin/reports/customer/${c.id}`}
+                                  className="bg-purple-100 text-purple-700 hover:bg-purple-200 px-2.5 py-1 rounded-lg text-xs font-bold transition shadow-sm"
+                                  title="كشف حساب العميل التفصيلي"
+                              >
+                                  📚 كشف حساب
+                              </Link>
+                              <button onClick={() => handleEditClick(c)} className="text-blue-600 bg-blue-50 hover:bg-blue-100 border border-blue-200 px-2 py-1 rounded-lg text-xs font-bold transition">
+                                تعديل ✏️
+                              </button>
+                              <button onClick={() => handleDelete(c.id)} disabled={isDeleting} className="text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 px-2 py-1 rounded-lg text-xs font-bold transition disabled:opacity-50">
+                                حذف 🗑️
+                              </button>
+                            </div>
+                          </td>
+                      </tr>
+                    )
+                  })
+                )}
             </tbody>
+
+            {/* تذييل الجدول بإجماليات الأرصدة المعروضة */}
+            {filteredCustomers.length > 0 && (
+              <tfoot className="bg-gray-100 font-bold border-t-2 border-gray-300">
+                <tr>
+                  <td colSpan={6} className="p-3.5 text-left text-sm text-gray-700">
+                    إجمالي مديونيات العملاء المعروضين:
+                  </td>
+                  <td className="p-3.5 text-center font-mono font-black text-base text-red-600 bg-red-50/50 border-x border-gray-300">
+                    {balancesSummary.totalDebtors.toLocaleString()} ج.م
+                  </td>
+                  <td className="p-3.5 text-center text-xs text-gray-500 font-normal">
+                    (صافي المستحقات: <b className="text-gray-900 font-mono font-bold">{balancesSummary.netReceivables.toLocaleString()} ج.م</b>)
+                  </td>
+                </tr>
+              </tfoot>
+            )}
             </table>
         </div>
       </div>
 
-      {/* Edit Modal (Responsive) (تم الحفاظ عليه بالكامل) */}
+      {/* الشريط الإحصائي الثابت في أسفل الشاشة لإجمالي أرصدة العملاء */}
+      <div className="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-md border-t-2 border-slate-700 p-3 sm:p-4 shadow-2xl z-40 text-white">
+        <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-3">
+          
+          <div className="flex flex-wrap items-center justify-between w-full md:w-auto gap-4 md:gap-8">
+            
+            {/* إجمالي مديونيات العملاء (عليهم) */}
+            <div>
+              <span className="text-[10px] text-slate-400 block font-bold">
+                إجمالي مديونيات العملاء (عليهم للشركة):
+              </span>
+              <span className="text-xl sm:text-2xl font-black font-mono text-rose-400">
+                {balancesSummary.totalDebtors.toLocaleString()} <small className="text-xs text-slate-300">ج.م</small>
+              </span>
+              <span className="text-[10px] text-slate-400 block font-mono">
+                ({balancesSummary.countDebtors} عميل مديون)
+              </span>
+            </div>
+
+            {/* إجمالي الأرصدة الدائنة (لهم عندنا) */}
+            {balancesSummary.totalCreditors > 0 && (
+              <div className="border-r border-slate-800 pr-4 md:pr-6">
+                <span className="text-[10px] text-slate-400 block font-bold">
+                  أرصدة عملاء دائنة (لهم عندنا رصيد):
+                </span>
+                <span className="text-xl sm:text-2xl font-black font-mono text-emerald-400">
+                  {balancesSummary.totalCreditors.toLocaleString()} <small className="text-xs text-slate-300">ج.م</small>
+                </span>
+                <span className="text-[10px] text-slate-400 block font-mono">
+                  ({balancesSummary.countCreditors} عميل دائن)
+                </span>
+              </div>
+            )}
+
+            {/* الصافي الإجمالي */}
+            <div className="border-r border-slate-800 pr-4 md:pr-6">
+              <span className="text-[10px] text-amber-400 block font-bold">
+                صافي المستحقات العام للعملاء:
+              </span>
+              <span className="text-xl sm:text-2xl font-black font-mono text-amber-300">
+                {balancesSummary.netReceivables.toLocaleString()} <small className="text-xs text-slate-300">ج.م</small>
+              </span>
+              <span className="text-[10px] text-slate-400 block">
+                (المعروض: {filteredCustomers.length} عميل)
+              </span>
+            </div>
+
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={refreshCustomers}
+              className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-xl text-xs font-bold border border-slate-700 transition flex items-center gap-1.5"
+            >
+              <span>🔄</span>
+              <span>تحديث الأرصدة</span>
+            </button>
+          </div>
+
+        </div>
+      </div>
+
+      {/* Edit Modal */}
       {isEditModalOpen && editingCustomer && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
-              <div className="bg-white rounded w-full max-w-lg p-6 space-y-4 shadow-2xl">
+              <div className="bg-white rounded-xl w-full max-w-lg p-6 space-y-4 shadow-2xl">
                   <h3 className="font-bold border-b pb-2 text-lg">تعديل بيانات العميل</h3>
                   <div className="space-y-3">
-                    <input type="text" placeholder="الكود" className="w-full border p-3 rounded bg-gray-50" value={editingCustomer.code} onChange={(e) => setEditingCustomer({...editingCustomer, code: e.target.value})} />
+                    <input type="text" placeholder="الكود" className="w-full border p-3 rounded bg-gray-50 font-mono" value={editingCustomer.code} onChange={(e) => setEditingCustomer({...editingCustomer, code: e.target.value})} />
                     <input type="text" placeholder="الاسم" className="w-full border p-3 rounded" value={editingCustomer.name} onChange={(e) => setEditingCustomer({...editingCustomer, name: e.target.value})} />
                     <div className="grid grid-cols-2 gap-2">
-                        <input type="text" placeholder="هاتف 1" className="w-full border p-3 rounded" value={editingCustomer.phone || ''} onChange={(e) => setEditingCustomer({...editingCustomer, phone: e.target.value})} />
-                        <input type="text" placeholder="هاتف 2" className="w-full border p-3 rounded bg-yellow-50" value={editingCustomer.phone2 || ''} onChange={(e) => setEditingCustomer({...editingCustomer, phone2: e.target.value})} />
+                        <input type="text" placeholder="هاتف 1" className="w-full border p-3 rounded font-mono" value={editingCustomer.phone || ''} onChange={(e) => setEditingCustomer({...editingCustomer, phone: e.target.value})} />
+                        <input type="text" placeholder="هاتف 2" className="w-full border p-3 rounded bg-yellow-50 font-mono" value={editingCustomer.phone2 || ''} onChange={(e) => setEditingCustomer({...editingCustomer, phone2: e.target.value})} />
                     </div>
                     <input type="text" placeholder="العنوان" className="w-full border p-3 rounded" value={editingCustomer.address || ''} onChange={(e) => setEditingCustomer({...editingCustomer, address: e.target.value})} />
                   </div>

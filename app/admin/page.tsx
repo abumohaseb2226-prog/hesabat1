@@ -16,16 +16,19 @@ export default function AdminDashboard() {
   const menuItems = [
     { id: 'orders', title: 'الأوردرات', icon: '🛒', color: 'from-blue-500 to-blue-700', href: '/orders/new' },
     { id: 'purchases', title: 'فاتورة مشتريات', icon: '📥', color: 'from-violet-600 to-purple-800', href: '/admin/purchases/new' },
-    { id: 'financial-papers', title: 'الأوراق المالية والشيكات', icon: '📑', color: 'from-teal-600 to-emerald-800', href: '/admin/financial-papers' },
+    { id: 'financial-reports', title: 'القوائم المالية والأرباح', icon: '📈', color: 'from-emerald-600 to-teal-800', href: '/admin/reports/financial' },
+    { id: 'financial-papers', title: 'الشيكات والأوراق المالية', icon: '📑', color: 'from-teal-600 to-emerald-800', href: '/admin/financial-papers' },
+    { id: 'debtors-creditors', title: 'الدائنون والمدينون (قروض)', icon: '🤝', color: 'from-indigo-600 to-purple-800', href: '/admin/debtors-creditors' },
+    { id: 'assets', title: 'الأصول الثابتة الرأسمالية', icon: '🏭', color: 'from-cyan-600 to-blue-800', href: '/admin/assets' },
     { id: 'offers', title: 'إدارة العروض', icon: '🏷️', color: 'from-pink-500 to-rose-600', href: '/admin/offers' },
     { id: 'audits', title: 'إدارة الجرد', icon: '⚖️', color: 'from-cyan-500 to-blue-700', href: '/admin/inventory-audits' },
-    { id: 'cash', title: 'النقدية', icon: '💰', color: 'from-green-500 to-green-700', href: '/payments/new' },
-    { id: 'inventory', title: 'المخزون', icon: '📦', color: 'from-purple-500 to-purple-700', href: '/admin/products' },
+    { id: 'cash', title: 'النقدية والخزينة', icon: '💰', color: 'from-green-500 to-green-700', href: '/payments/new' },
+    { id: 'inventory', title: 'المخزون والأصناف', icon: '📦', color: 'from-purple-500 to-purple-700', href: '/admin/products' },
     { id: 'customers', title: 'العملاء', icon: '👥', color: 'from-orange-500 to-orange-700', href: '/admin/customers' },
     { id: 'vendors', title: 'الموردين', icon: '🏪', color: 'from-amber-500 to-amber-700', href: '/admin/vendors' },
-    { id: 'reports', title: 'التقارير', icon: '📊', color: 'from-teal-500 to-emerald-700', href: '/admin/reports' },
+    { id: 'reports', title: 'التقارير المركزية', icon: '📊', color: 'from-teal-500 to-emerald-700', href: '/admin/reports' },
     { id: 'returns', title: 'المرتجعات', icon: '↩️', color: 'from-red-500 to-red-700', href: '/admin/returns' },
-    { id: 'users', title: 'الموظفين', icon: '👔', color: 'from-indigo-500 to-indigo-700', href: '/admin/users' },
+    { id: 'users', title: 'الموظفين والصلاحيات', icon: '👔', color: 'from-indigo-500 to-indigo-700', href: '/admin/users' },
     { id: 'settings', title: 'الإعدادات', icon: '⚙️', color: 'from-gray-500 to-gray-700', href: '/admin/settings' },
   ]
 
@@ -46,7 +49,7 @@ export default function AdminDashboard() {
               ← خروج
             </button>
             <div className="bg-blue-600 px-4 py-2 rounded-lg font-bold text-white">
-              لوحة التحكم
+              لوحة التحكم المحاسبية
             </div>
           </div>
           <div className="flex items-center gap-3">
@@ -65,10 +68,10 @@ export default function AdminDashboard() {
       <main className="w-full px-4 md:px-8 py-12">
         <div className="text-center mb-12">
           <h1 className="text-4xl md:text-5xl font-bold text-white mb-2">
-            لوحة التحكم الرئيسية
+            لوحة التحكم المحاسبية والإدارية
           </h1>
           <p className="text-gray-400 text-lg">
-            نظام إدارة المبيعات المركزي - RoyalKids
+            نظام إدارة المبيعات، المخازن، والأصول المالية - RoyalKids
           </p>
         </div>
 

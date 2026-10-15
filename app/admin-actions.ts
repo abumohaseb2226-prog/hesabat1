@@ -160,9 +160,7 @@ export async function addBulkProducts(products: any[]) {
     }
 }
 
-// =========================================================================
 // تعديل كميات الأصناف الأولية مع حساب المبيعات وكل المرتجعات السابقة بدقة
-// =========================================================================
 export async function updateInitialStockBulk(items: { modelNo: string; color: string; stockQty: number }[]) {
   try {
     let updatedCount = 0;
@@ -177,7 +175,6 @@ export async function updateInitialStockBulk(items: { modelNo: string; color: st
 
       if (isNaN(newInitialStock)) continue;
 
-      // جلب الصنف مع علاقات الأوردرات والمرتجعات ومرتجعات الموردين
       const product = await prisma.product.findUnique({
         where: {
           modelNo_color: {
@@ -191,9 +188,9 @@ export async function updateInitialStockBulk(items: { modelNo: string; color: st
               returnItems: true
             }
           },
-          returnItems: true,       // الأصناف المرتجعة من العملاء
-          exchangedItems: true,    // الأصناف المستبدلة التي خرجت للعملاء
-          vendorTransactions: true // حركات الموردين بما فيها مرتجع المشتريات
+          returnItems: true,
+          exchangedItems: true,
+          vendorTransactions: true
         }
       });
 
@@ -202,26 +199,15 @@ export async function updateInitialStockBulk(items: { modelNo: string; color: st
         continue;
       }
 
-      // 1. حساب مبيعات العملاء:
-      // في OrderItem، الكمية quantity مسجلة إما بالقطع أو الوحدات
       const totalSoldToCustomers = product.orderItems.reduce((acc, oi) => acc + (oi.quantity || 0), 0);
-
-      // 2. حساب مرتجعات العملاء المباشرة على هذا الصنف
       const totalReturnedFromCustomers = product.returnItems.reduce((acc, ri) => acc + (ri.quantity || 0), 0);
-
-      // 3. حساب الأصناف المستبدلة التي خرجت كبديل للعملاء
       const totalExchangedOut = product.exchangedItems.reduce((acc, ei) => acc + (ei.exchangedQty || 0), 0);
-
-      // صافي المبيعات للعملاء = المباع - المرتجع + المستبدل
       const netCustomerSales = totalSoldToCustomers - totalReturnedFromCustomers + totalExchangedOut;
 
-      // 4. حساب مرتجعات المشتريات للموردين السابقة (VendorTransaction حيث type = RETURN)
       const totalVendorReturns = product.vendorTransactions
         .filter(vt => vt.type === 'RETURN')
         .reduce((acc, vt) => acc + (vt.quantity || 0), 0);
 
-      // المعادلة الدقيقة للرصيد المتاح:
-      // الرصيد المتاح = الكمية الأولية الجديدة - صافي مبيعات العملاء - مرتجعات الموردين
       const newCurrentStock = newInitialStock - netCustomerSales - totalVendorReturns;
 
       await prisma.product.update({
@@ -574,9 +560,76 @@ export async function deleteAllCustomers() {
     }
 }
 
+// =========================================================================
+// جلب قائمة العملاء في لوحة التحكم مع احتساب الرصيد الصافي الأخير لكل عميل
+// =========================================================================
 export async function getAdminCustomers() {
-    const custs = await prisma.customer.findMany({ orderBy: { id: 'desc' }, take: 2000 });
-    return JSON.parse(JSON.stringify(custs));
+    try {
+      const custs = await prisma.customer.findMany({
+        orderBy: { id: 'desc' },
+        take: 3000,
+        include: {
+          orders: {
+            select: {
+              id: true,
+              totalAmount: true,
+              originalReturns: {
+                where: { status: { not: 'CANCELLED' } },
+                select: { totalRefund: true }
+              }
+            }
+          },
+          payments: {
+            select: { amount: true, type: true }
+          }
+        }
+      });
+
+      const customersWithBalance = custs.map(c => {
+        // 1. إجمالي فواتير البيع (مدين - عليه)
+        const totalOrders = c.orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
+
+        // 2. إجمالي مرتجعات العميل (دائن - يخفض مديونيته)
+        let totalReturns = 0;
+        c.orders.forEach(o => {
+          o.originalReturns.forEach(r => {
+            totalReturns += (r.totalRefund || 0);
+          });
+        });
+
+        // 3. المدفوعات المسددة من العميل (وارد للخزينة يخفض مديونيته)
+        let totalPaymentsIn = 0;
+        let totalPaymentsOut = 0;
+        c.payments.forEach(p => {
+          if (p.type === 'IN' || p.type === 'PAYMENT_COLLECTION') {
+            totalPaymentsIn += (p.amount || 0);
+          } else if (p.type === 'OUT') {
+            totalPaymentsOut += (p.amount || 0);
+          }
+        });
+
+        // الرصيد الصافي الأخير للعميل = الفواتير - المرتجعات - المقبوضات + الصادر له
+        // ناتج موجب (+) = العميل مدين (عليه فلوس للشركة)
+        // ناتج سالب (-) = العميل دائن (له فلوس عند الشركة)
+        const balance = totalOrders - totalReturns - totalPaymentsIn + totalPaymentsOut;
+
+        return {
+          id: c.id,
+          code: c.code,
+          name: c.name,
+          phone: c.phone,
+          phone2: c.phone2,
+          address: c.address,
+          source: c.source,
+          balance: Math.round(balance * 100) / 100
+        };
+      });
+
+      return JSON.parse(JSON.stringify(customersWithBalance));
+    } catch (error) {
+      console.error('Error fetching admin customers with balances:', error);
+      return [];
+    }
 }
 
 // ==========================================
