@@ -99,7 +99,7 @@ export async function createTestOrder(userId: string) {
       // 6. Revalidate paths to show the new order in the UI
       revalidatePath('/');
       revalidatePath('/orders/list');
-      revalidatePath('/admin/stock'); // Also revalidate stock page
+      revalidatePath('/admin/products');
 
       console.log(`Successfully created REAL test order #${newOrder.orderNo} with ${newOrder.items.length} items.`);
 
@@ -138,7 +138,6 @@ export async function deleteTestOrders() {
         const testOrders = await db.order.findMany({
             where: {
                 customerId: testCustomer.id,
-                status: { not: 'DELETED' },
             },
             include: {
                 items: {
@@ -159,7 +158,7 @@ export async function deleteTestOrders() {
         for (const order of testOrders) {
             await db.$transaction(async (tx) => {
                 // Restore stock for each item in the order
-                const stockRestores = order.items.map(item =>
+                const stockRestores = order.items.map((item: { productId: string; quantity: number }) =>
                     tx.product.update({
                         where: { id: item.productId },
                         data: { currentStock: { increment: item.quantity } },
@@ -167,21 +166,22 @@ export async function deleteTestOrders() {
                 );
                 await Promise.all(stockRestores);
 
-                // Mark the order as deleted
-                await tx.order.update({
-                    where: { id: order.id },
-                    data: {
-                        status: 'DELETED',
-                        notes: `${order.notes || ''} (تم الحذف وإرجاع المخزون)`.trim(),
-                    },
+                // حذف بنود الأوردر وحذف الأوردر التجريبي نهائياً
+                await tx.orderItem.deleteMany({
+                    where: { orderId: order.id },
                 });
+
+                await tx.order.delete({
+                    where: { id: order.id },
+                });
+
                 restoredItemsCount += order.items.length;
-            }, { timeout: 60000 }); // Increase timeout to 60 seconds
+            }, { timeout: 60000 });
         }
 
         revalidatePath('/');
         revalidatePath('/orders/list');
-        revalidatePath('/admin/stock');
+        revalidatePath('/admin/products');
 
         const message = `تم حذف ${testOrders.length} فاتورة تجريبية بنجاح، وإرجاع ${restoredItemsCount} صنف إلى المخزون.`;
         console.log(message);
