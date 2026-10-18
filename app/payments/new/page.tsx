@@ -1,12 +1,21 @@
 'use client'
+
 import { useState, useEffect, useRef } from 'react';
-import { getCustomers, getSafes, createPayment, searchCustomers, checkCustomerPhone, getEmployees, createEmployeePayment } from '@/app/actions';
+import { 
+  getCustomers, 
+  getSafes, 
+  createPayment, 
+  searchCustomers, 
+  checkCustomerPhone, 
+  getEmployees, 
+  createEmployeePayment,
+  checkHrConnection
+} from '@/app/actions/index'; // 👈 استيراد صريح ومباشر من index.ts لمنع أي تداخل
 import { getVendors } from '@/app/vendor-actions';
 import { addCustomer } from '@/app/admin-actions';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
 
-// Interfaces
 interface Safe { id: string; name: string; }
 interface Customer { id: string; name: string; phone?: string; code?: string; source?: string; }
 interface Vendor { id: string; name: string; code: string; phone?: string | null; phone2?: string | null; address?: string | null; notes?: string | null; source?: string; _count?: { products: number }; }
@@ -16,23 +25,20 @@ export default function CashManagementPage() {
   const { data: session } = useSession();
   const router = useRouter();
 
-  // Tabs & Payout Type
   const [activeTab, setActiveTab] = useState<'IN' | 'OUT' | 'TRANSFER'>('IN');
   const [payoutType, setPayoutType] = useState<'VENDOR' | 'EXPENSE' | 'EMPLOYEE'>('VENDOR');
 
-  // Common State
   const [safes, setSafes] = useState<Safe[]>([]);
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('EGP'); 
   const [description, setDescription] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [isSaving, setIsSaving] = useState(false);
+  const [isTestingHr, setIsTestingHr] = useState(false);
 
-  // Safe State
   const [selectedSafeId, setSelectedSafeId] = useState('');       
   const [targetSafeId, setTargetSafeId] = useState('');           
 
-  // Customer State
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
   const [customerResults, setCustomerResults] = useState<Customer[]>([]);
@@ -40,18 +46,15 @@ export default function CashManagementPage() {
   const [isSearchingCustomer, setIsSearchingCustomer] = useState(false);
   const customerListRef = useRef<HTMLDivElement>(null);
 
-  // Vendor State
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [selectedVendorId, setSelectedVendorId] = useState('');
   const [vendorSearchTerm, setVendorSearchTerm] = useState('');
   const [showVendorList, setShowVendorList] = useState(false);
   const vendorListRef = useRef<HTMLDivElement>(null);
 
-  // --- 1. ADD EMPLOYEE STATE ---
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
 
-  // Quick Add Customer State
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
   const [newCust, setNewCust] = useState({ name: '', phone: '', phone2: '', code: '', address: '' });
   const [isSavingCust, setIsSavingCust] = useState(false);
@@ -70,7 +73,6 @@ export default function CashManagementPage() {
       }
     });
     getVendors().then(setVendors);
-    // --- 2. FETCH EMPLOYEES ---
     getEmployees().then(res => {
       if (res.success && res.data) {
         setEmployees(res.data);
@@ -97,6 +99,19 @@ export default function CashManagementPage() {
       return () => clearTimeout(delayDebounceFn);
   }, [customerSearchTerm]);
 
+  // فحص الاتصال المباشر بتطبيق الحضور والانصراف
+  const handleTestHr = async () => {
+    setIsTestingHr(true);
+    const test = await checkHrConnection();
+    setIsTestingHr(false);
+
+    if (test.success) {
+      alert(`✅ الاتصال ناجح ومباشر بسوبابيز الحضور (amrhh)!\n- عدد الموظفين المسجلين هناك: ${test.employeesCount} موظف.\n- آخر حركة مسجلة برقم #${test.lastTransaction?.id || 0}`);
+    } else {
+      alert(`❌ فشل الاتصال بقاعدة بيانات الحضور:\n${test.error}\n(تأكد من تثبيت مكتبة pg وإعادة تشغيل السيرفر).`);
+    }
+  };
+
   const handleQuickAddCustomer = async (e: React.FormEvent) => {
       e.preventDefault();
       if(!newCust.name) return alert('الاسم مطلوب');
@@ -118,13 +133,12 @@ export default function CashManagementPage() {
       setIsSavingCust(false);
   };
 
-  // --- 3. MODIFY HANDLESAVE ---
   const handleSave = async () => {
     if (!amount || parseFloat(amount) <= 0) return alert('المبلغ يجب أن يكون أكبر من صفر');
     if (!selectedSafeId) return alert('يجب اختيار الخزنة');
     
     setIsSaving(true);
-    let res: { success: boolean; error?: string; };
+    let res: { success: boolean; error?: string; message?: string };
 
     if (activeTab === 'OUT' && payoutType === 'EMPLOYEE') {
         if (!selectedEmployeeId) { setIsSaving(false); return alert('يجب اختيار الموظف'); }
@@ -138,7 +152,7 @@ export default function CashManagementPage() {
             transactionDate: new Date(paymentDate)
         }, session?.user?.image as string);
     
-    } else { // Original logic
+    } else {
         if (activeTab === 'IN' && !selectedCustomerId) { setIsSaving(false); return alert('يجب اختيار العميل'); }
         if (activeTab === 'OUT' && payoutType === 'VENDOR' && !selectedVendorId) { setIsSaving(false); return alert('يجب اختيار المورد'); }
         if (activeTab === 'OUT' && payoutType === 'EXPENSE' && !description) { setIsSaving(false); return alert('يجب كتابة بيان المصروف'); }
@@ -166,7 +180,7 @@ export default function CashManagementPage() {
     }
 
     if (res.success) { 
-      alert('✅ تمت العملية بنجاح'); 
+      alert(res.message || '✅ تمت العملية بنجاح'); 
       setAmount('');
       setDescription('');
       setPaymentDate(new Date().toISOString().split('T')[0]);
@@ -174,7 +188,7 @@ export default function CashManagementPage() {
       setCustomerSearchTerm('');
       setSelectedVendorId('');
       setVendorSearchTerm('');
-      setSelectedEmployeeId(''); // Reset employee
+      setSelectedEmployeeId('');
     } else {
       alert('❌ خطأ: ' + (res.error || 'حدث خطأ أثناء الحفظ'));
     }
@@ -189,25 +203,24 @@ export default function CashManagementPage() {
     if (activeTab === 'OUT') {
       if (payoutType === 'EMPLOYEE') return 'bg-teal-600 hover:bg-teal-700';
       if (payoutType === 'VENDOR') return 'bg-purple-600 hover:bg-purple-700';
-      return 'bg-orange-500 hover:bg-orange-600'; // Was red, using orange for expense
+      return 'bg-orange-500 hover:bg-orange-600';
     }
     return 'bg-blue-600 hover:bg-blue-700';
   };
 
   const getButtonLabel = () => {
-    if (isSaving) return 'جاري الحفظ...';
+    if (isSaving) return 'جاري الحفظ والترحيل...';
     if (activeTab === 'IN') return '💾 حفظ سند قبض';
     if (activeTab === 'OUT') {
       if (payoutType === 'VENDOR') return '💾 حفظ سند دفع للمورد';
-      if (payoutType === 'EMPLOYEE') return '💾 حفظ صرف لموظف';
+      if (payoutType === 'EMPLOYEE') return '💾 حفظ وترحيل صرف لموظف 🔗';
       return '💾 حفظ سند مصروفات';
     }
     return '💾 حفظ عملية التحويل';
   };
 
-  // --- 4. MODIFY JSX ---
   return (
-    <div className="min-h-screen bg-gray-50 p-4" dir="rtl">
+    <div className="min-h-screen bg-gray-50 p-4 font-sans" dir="rtl">
         <div className="max-w-2xl mx-auto">
             <h1 className="text-2xl font-bold mb-6 text-gray-800">💰 إدارة النقدية والخزينة</h1>
             
@@ -248,7 +261,7 @@ export default function CashManagementPage() {
                       <label className="text-sm font-bold text-red-800 block mb-2">نوع الصرف:</label>
                       <div className="grid grid-cols-3 gap-2">
                         <button type="button" onClick={() => { setPayoutType('VENDOR'); setDescription(''); }} className={`p-3 rounded-lg font-bold text-sm transition ${ payoutType === 'VENDOR' ? 'bg-purple-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border' }`}>🏪 دفع لمورد</button>
-                        <button type="button" onClick={() => { setPayoutType('EMPLOYEE'); setDescription(''); }} className={`p-3 rounded-lg font-bold text-sm transition ${ payoutType === 'EMPLOYEE' ? 'bg-teal-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border' }`}>👨‍💼 صرف لموظف</button>
+                        <button type="button" onClick={() => { setPayoutType('EMPLOYEE'); setDescription(''); }} className={`p-3 rounded-lg font-bold text-sm transition ${ payoutType === 'EMPLOYEE' ? 'bg-teal-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border' }`}>👨‍💼 صرف لموظف (مربوط)</button>
                         <button type="button" onClick={() => { setPayoutType('EXPENSE'); setDescription(''); }} className={`p-3 rounded-lg font-bold text-sm transition ${ payoutType === 'EXPENSE' ? 'bg-orange-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border' }`}>💸 مصروفات</button>
                       </div>
                     </div>
@@ -268,20 +281,35 @@ export default function CashManagementPage() {
 
                     {payoutType === 'EMPLOYEE' && (
                         <div className="bg-teal-50 border-2 border-teal-200 rounded-lg p-3 animate-fade-in space-y-3">
-                            <label className="text-sm font-bold text-teal-800 block">اختر الموظف</label>
+                            <div className="flex flex-wrap justify-between items-center gap-2">
+                              <label className="text-sm font-bold text-teal-800 block">اختر الموظف *</label>
+                              
+                              {/* زر فحص الاتصال التفاعلي */}
+                              <button
+                                type="button"
+                                onClick={handleTestHr}
+                                disabled={isTestingHr}
+                                className="text-[11px] bg-teal-200 hover:bg-teal-300 text-teal-900 font-bold px-3 py-1 rounded-lg border border-teal-400 transition flex items-center gap-1 shadow-sm"
+                                title="اضغط للتأكد من الاتصال بسوبابيز الحضور وعرض عدد موظفيها"
+                              >
+                                <span>{isTestingHr ? '⏳' : '🔍'}</span>
+                                <span>{isTestingHr ? 'جاري الفحص...' : 'فحص الاتصال بـ amrhh'}</span>
+                              </button>
+                            </div>
+
                             <select value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)} className="w-full p-3 border-2 border-teal-300 rounded-lg bg-white text-lg font-bold outline-none focus:border-teal-500">
                                 <option value="">-- اختر موظف --</option>
                                 {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
                             </select>
                             <label className="text-sm font-bold text-teal-800 block">البيان (مطلوب)</label>
-                            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="مثال: سلفة على الراتب" className="w-full p-3 border-2 border-teal-300 rounded-lg outline-none h-20 focus:border-teal-500" />
+                            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="مثال: سلفة نقدية على الراتب..." className="w-full p-3 border-2 border-teal-300 rounded-lg outline-none h-20 focus:border-teal-500" />
                         </div>
                     )}
 
                     {payoutType === 'EXPENSE' && (
                       <div className="bg-orange-50 border-2 border-orange-200 rounded-lg p-3">
                         <label className="text-sm font-bold text-orange-800 block mb-2">💸 بيان المصروف (مطلوب)</label>
-                        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="مثال: إيجار المحل، فاتورة كهرباء، رواتب..." className="w-full p-3 border-2 border-orange-300 rounded-lg bg-white outline-none focus:border-orange-500 h-24"/>
+                        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="مثال: إيجار المحل، فاتورة كهرباء، بوفيه..." className="w-full p-3 border-2 border-orange-300 rounded-lg bg-white outline-none focus:border-orange-500 h-24"/>
                       </div>
                     )}
                   </div>

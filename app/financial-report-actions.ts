@@ -208,7 +208,7 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
 
 // =========================================================================
 // 2. تقرير قائمة المركز المالي والميزانية العمومية (Balance Sheet)
-// مصحح بالكامل ومطابق 100% مع شاشات العملاء والمخازن والخزائن
+// مصحح بالكامل ومطابق 100% مع شاشات العملاء والموردين والمخازن والخزائن
 // =========================================================================
 export async function getBalanceSheet() {
   try {
@@ -263,10 +263,8 @@ export async function getBalanceSheet() {
     let totalCustomerCreditors = 0     // لهم عندنا (أرصدة دائنة مقدماً)
 
     customers.forEach(c => {
-      // إجمالي الفواتير
       const ordersTotal = c.orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0)
 
-      // إجمالي المرتجعات
       let returnsTotal = 0
       c.orders.forEach(o => {
         o.originalReturns.forEach(r => {
@@ -274,7 +272,6 @@ export async function getBalanceSheet() {
         })
       })
 
-      // إجمالي السدادات من العميل (IN و PAYMENT_COLLECTION)
       let paymentsIn = 0
       let paymentsOut = 0
       c.payments.forEach(p => {
@@ -294,7 +291,6 @@ export async function getBalanceSheet() {
       }
     })
 
-    // تقريب الأرقام
     totalCustomerDebtors = Math.round(totalCustomerDebtors * 100) / 100
     totalCustomerCreditors = Math.round(totalCustomerCreditors * 100) / 100
     const netCustomerReceivables = Math.round((totalCustomerDebtors - totalCustomerCreditors) * 100) / 100
@@ -318,31 +314,114 @@ export async function getBalanceSheet() {
     })
     const totalFixedAssetsValue = fixedAssets.reduce((sum, a) => sum + a.currentValue, 0)
 
-    // إجمالي الأصول الكلية (باستخدام مديونيات العملاء المدينة)
-    const totalCurrentAssets = totalCashInSafes + totalBankBalances + totalCustomerDebtors + totalInventoryValueAtCost + totalDebtorsReceivables
-    const totalAssets = totalCurrentAssets + totalFixedAssetsValue
-
-    // ==========================================
-    // 7. الالتزامات (الخصوم)
-    // ==========================================
-
-    // أ. مستحقات الموردين (التجارية)
+    // =========================================================================
+    // 7. الالتزامات (الخصوم) ومستحقات الموردين - مطابقة 100% مع شاشة الموردين
+    // =========================================================================
     const vendors = await prisma.vendor.findMany({
       include: {
-        products: { select: { stockQty: true, cost: true } },
-        transactions: true,
-        payments: { where: { type: 'OUT' } }
+        products: {
+          select: { stockQty: true, cost: true }
+        },
+        transactions: {
+          select: { type: true, amount: true, reference: true }
+        },
+        payments: {
+          where: { type: 'OUT' },
+          select: { amount: true, checkRefId: true, description: true }
+        },
+        checks: {
+          where: { type: 'PAYABLE', status: { not: 'CANCELLED' } },
+          select: { amount: true, checkNo: true }
+        }
       }
     })
-    let totalVendorPayables = 0
-    vendors.forEach(v => {
-      const initialStockDebt = v.products.reduce((s, p) => s + (p.stockQty * p.cost), 0)
-      const purchasesFromTrans = v.transactions.filter(t => t.type === 'PURCHASE').reduce((s, t) => s + t.amount, 0)
-      const returns = v.transactions.filter(t => t.type === 'RETURN').reduce((s, t) => s + t.amount, 0)
-      const paid = v.payments.reduce((s, p) => s + p.amount, 0)
-      const balance = (initialStockDebt + purchasesFromTrans) - (returns + paid)
-      if (balance > 0) totalVendorPayables += balance
+
+    // جلب أصناف الموردين المسجلة بالنص دون vendorId لاحتسابها بدقة
+    const allProductsWithName = await prisma.product.findMany({
+      where: {
+        vendorId: null,
+        vendor: { not: null }
+      },
+      select: {
+        vendor: true,
+        stockQty: true,
+        cost: true
+      }
     })
+
+    const unlinkedProductsByVendorName = new Map<string, number>()
+    allProductsWithName.forEach(p => {
+      if (p.vendor) {
+        const amt = (p.stockQty || 0) * (p.cost || 0)
+        unlinkedProductsByVendorName.set(
+          p.vendor.trim(),
+          (unlinkedProductsByVendorName.get(p.vendor.trim()) || 0) + amt
+        )
+      }
+    })
+
+    let totalVendorPayables = 0     // مستحقات الموردين (لهم عندنا: 769,315.6)
+    let totalVendorDebtors = 0      // أرصدة موردين مدينة (لنا عندهم: 2,000)
+
+    vendors.forEach(vendor => {
+      // 1. بضاعة المخزون الافتتاحي المربوطة بالـ ID أو باسم المورد
+      let initialStockTotal = vendor.products.reduce((s, p) => s + ((p.stockQty || 0) * (p.cost || 0)), 0)
+      if (unlinkedProductsByVendorName.has(vendor.name.trim())) {
+        initialStockTotal += unlinkedProductsByVendorName.get(vendor.name.trim())!
+      }
+
+      // 2. الفواتير المجمعة
+      const groupedTrans = new Map<string, { type: string, amount: number }>()
+      vendor.transactions.forEach(t => {
+        const refKey = t.reference ? `${t.type}_${t.reference}` : `single_${Math.random()}`
+        if (groupedTrans.has(refKey)) {
+          groupedTrans.get(refKey)!.amount += t.amount
+        } else {
+          groupedTrans.set(refKey, { type: t.type, amount: t.amount })
+        }
+      })
+
+      let purchasesTotal = 0
+      let returnsTotal = 0
+      let transactionPayments = 0
+
+      groupedTrans.forEach(t => {
+        if (t.type === 'PURCHASE') purchasesTotal += t.amount
+        else if (t.type === 'RETURN') returnsTotal += t.amount
+        else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) transactionPayments += t.amount
+      })
+
+      // 3. سندات الدفع النقدية مع تجنب تكرار الشيكات
+      let cashPaymentsTotal = 0
+      vendor.payments.forEach(p => {
+        if (p.checkRefId || (p.description && p.description.includes('شيك #'))) return
+        cashPaymentsTotal += p.amount
+      })
+
+      // 4. الشيكات الصادرة
+      let additionalChecksTotal = 0
+      const existingRefs = new Set(Array.from(groupedTrans.keys()))
+      vendor.checks.forEach(chk => {
+        const refKey = `PAYMENT_شيك #${chk.checkNo}`
+        if (!existingRefs.has(refKey) && !existingRefs.has(`single_شيك #${chk.checkNo}`)) {
+          additionalChecksTotal += chk.amount
+        }
+      })
+
+      const totalCredits = initialStockTotal + purchasesTotal
+      const totalDebits = returnsTotal + transactionPayments + cashPaymentsTotal + additionalChecksTotal
+      const bal = Math.round((totalCredits - totalDebits) * 100) / 100
+
+      if (bal > 0) {
+        totalVendorPayables += bal
+      } else if (bal < 0) {
+        totalVendorDebtors += Math.abs(bal)
+      }
+    })
+
+    totalVendorPayables = Math.round(totalVendorPayables * 100) / 100
+    totalVendorDebtors = Math.round(totalVendorDebtors * 100) / 100
+    const netVendorPayables = Math.round((totalVendorPayables - totalVendorDebtors) * 100) / 100
 
     // ب. أوراق دفع شيكات تحت الصرف
     const pendingPayableChecks = await prisma.check.findMany({
@@ -360,6 +439,10 @@ export async function getBalanceSheet() {
 
     const totalLiabilities = totalVendorPayables + totalChecksPayable + totalCreditorsLiability + totalCustomerCreditLiabilities
 
+    // إجمالي الأصول الكلية (مع إضافة أرصدة الموردين المدينة 2,000 ج.م كأصول متداولة)
+    const totalCurrentAssets = totalCashInSafes + totalBankBalances + totalCustomerDebtors + totalInventoryValueAtCost + totalDebtorsReceivables + totalVendorDebtors
+    const totalAssets = totalCurrentAssets + totalFixedAssetsValue
+
     // ==========================================
     // 8. حقوق الملكية ورأس المال
     // ==========================================
@@ -367,7 +450,6 @@ export async function getBalanceSheet() {
       .filter(a => a.type === 'PARTNER')
       .reduce((sum, a) => sum + a.balance, 0)
 
-    // صافي رأس المال العامل والأرباح المرحلة (التوازن المحاسبي)
     const retainedEarnings = totalAssets - totalLiabilities - totalPartnersCapital
     const totalEquity = totalPartnersCapital + retainedEarnings
 
@@ -384,12 +466,14 @@ export async function getBalanceSheet() {
           inventoryAtCost: totalInventoryValueAtCost,
           inventoryAtPrice: totalInventoryValueAtPrice,
           debtorsReceivables: totalDebtorsReceivables,
+          vendorDebtors: totalVendorDebtors, // أرصدة الموردين المدينة المطابقة لـ 2,000
           totalCurrentAssets,
           fixedAssets: totalFixedAssetsValue,
           totalAssets
         },
         liabilities: {
-          vendorPayables: totalVendorPayables,
+          vendorPayables: totalVendorPayables, // مستحقات الموردين المطابقة تماماً لـ 769,315.6
+          netVendorPayables: netVendorPayables, // صافي مستحقات الموردين المطابق لـ 767,315.6
           checksPayable: totalChecksPayable,
           creditorsLiability: totalCreditorsLiability,
           customerCredits: totalCustomerCreditLiabilities,

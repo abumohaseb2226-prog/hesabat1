@@ -4,9 +4,9 @@ import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/auth'
 
-// ========================================
-// 1. جلب كل الموردين
-// ========================================
+// =========================================================================
+// 1. جلب كل الموردين مع احتساب الرصيد الصافي الحالي لكل مورد بدقة
+// =========================================================================
 export async function getVendors() {
   try {
     const vendors = await prisma.vendor.findMany({
@@ -14,12 +14,134 @@ export async function getVendors() {
         _count: {
           select: { products: true },
         },
+        products: {
+          select: {
+            stockQty: true,
+            cost: true,
+          }
+        },
+        transactions: {
+          select: {
+            type: true,
+            amount: true,
+            reference: true
+          }
+        },
+        payments: {
+          where: { type: 'OUT' },
+          select: {
+            amount: true,
+            checkRefId: true,
+            description: true
+          }
+        },
+        checks: {
+          where: { type: 'PAYABLE', status: { not: 'CANCELLED' } },
+          select: {
+            amount: true,
+            checkNo: true
+          }
+        }
       },
       orderBy: { createdAt: 'desc' },
     })
-    return vendors
+
+    // جلب المنتجات التي قد تكون مسجلة باسم المورد كنص بدون vendorId
+    const allProductsWithName = await prisma.product.findMany({
+      where: {
+        vendorId: null,
+        vendor: { not: null }
+      },
+      select: {
+        vendor: true,
+        stockQty: true,
+        cost: true
+      }
+    })
+
+    const unlinkedProductsByVendorName = new Map<string, number>()
+    allProductsWithName.forEach(p => {
+      if (p.vendor) {
+        const amt = (p.stockQty || 0) * (p.cost || 0)
+        unlinkedProductsByVendorName.set(
+          p.vendor.trim(),
+          (unlinkedProductsByVendorName.get(p.vendor.trim()) || 0) + amt
+        )
+      }
+    })
+
+    const vendorsWithBalance = vendors.map(vendor => {
+      // 1. بضاعة المخزون الافتتاحي المربوطة بالمعرف أو بالاسم
+      let initialStockTotal = vendor.products.reduce((s, p) => s + ((p.stockQty || 0) * (p.cost || 0)), 0)
+      if (unlinkedProductsByVendorName.has(vendor.name.trim())) {
+        initialStockTotal += unlinkedProductsByVendorName.get(vendor.name.trim())!
+      }
+
+      // 2. الفواتير والمرتجعات المسجلة
+      const groupedTrans = new Map<string, { type: string, amount: number }>()
+      vendor.transactions.forEach(t => {
+        const refKey = t.reference ? `${t.type}_${t.reference}` : `single_${Math.random()}`
+        if (groupedTrans.has(refKey)) {
+          groupedTrans.get(refKey)!.amount += t.amount
+        } else {
+          groupedTrans.set(refKey, { type: t.type, amount: t.amount })
+        }
+      })
+
+      let purchasesTotal = 0
+      let returnsTotal = 0
+      let transactionPayments = 0
+
+      groupedTrans.forEach(t => {
+        if (t.type === 'PURCHASE') purchasesTotal += t.amount
+        else if (t.type === 'RETURN') returnsTotal += t.amount
+        else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) transactionPayments += t.amount
+      })
+
+      // 3. سندات الدفع النقدية مع تجنب تكرار الشيكات
+      let cashPaymentsTotal = 0
+      vendor.payments.forEach(p => {
+        if (p.checkRefId || (p.description && p.description.includes('شيك #'))) {
+          return // تم احتسابه من حركة الشيك
+        }
+        cashPaymentsTotal += p.amount
+      })
+
+      // 4. الشيكات الصادرة للمورد
+      let additionalChecksTotal = 0
+      const existingRefs = new Set(Array.from(groupedTrans.keys()))
+      vendor.checks.forEach(chk => {
+        const refKey = `PAYMENT_شيك #${chk.checkNo}`
+        if (!existingRefs.has(refKey) && !existingRefs.has(`single_شيك #${chk.checkNo}`)) {
+          additionalChecksTotal += chk.amount
+        }
+      })
+
+      const totalCredits = initialStockTotal + purchasesTotal // له عندنا
+      const totalDebits = returnsTotal + transactionPayments + cashPaymentsTotal + additionalChecksTotal // دفعنا له / عليه
+
+      const balance = Math.round((totalCredits - totalDebits) * 100) / 100
+
+      return {
+        id: vendor.id,
+        name: vendor.name,
+        code: vendor.code,
+        phone: vendor.phone,
+        phone2: vendor.phone2,
+        address: vendor.address,
+        notes: vendor.notes,
+        source: vendor.source,
+        productsCount: vendor._count.products,
+        balance,
+        totalPurchases: totalCredits,
+        totalPayments: totalDebits,
+        totalReturns: returnsTotal
+      }
+    })
+
+    return JSON.parse(JSON.stringify(vendorsWithBalance))
   } catch (error) {
-    console.error('Error fetching vendors:', error)
+    console.error('Error fetching vendors with balance:', error)
     return []
   }
 }
@@ -220,7 +342,7 @@ export async function getVendorBalance(vendorId: string) {
 }
 
 // =========================================================================
-// 8. جلب كشف حساب المورد (دفتر الأستاذ) - شامل الشيكات والمدفوعات والمخزون
+// 8. جلب كشف حساب المورد (دفتر الأستاذ)
 // =========================================================================
 export async function getVendorLedger(vendorId: string) {
   try {
@@ -363,7 +485,6 @@ export async function getVendorLedger(vendorId: string) {
           isFromProducts: false,
         })
       } else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) {
-        // ✅ إضافة الشيكات والمدفوعات المسجلة في VendorTransaction
         ledger.push({
           id: t.id,
           type: 'PAYMENT',
@@ -414,7 +535,7 @@ export async function getVendorLedger(vendorId: string) {
     // د. إضافة سندات الدفع النقدية مع منع التكرار
     payments.forEach(p => {
       if (p.checkRefId || (p.description && p.description.includes('شيك #'))) {
-        return // تم حسابه مسبقاً من حركة الشيك
+        return
       }
       ledger.push({
         id: p.id,
@@ -449,8 +570,6 @@ export async function getVendorLedger(vendorId: string) {
 
     const totalPurchases = totalPurchasesFromProducts + totalPurchasesFromInvoices
     const totalReturns = ledger.filter(t => t.type === 'RETURN').reduce((sum, t) => sum + (Number(t.debit) || 0), 0)
-    
-    // إجمالي المدفوعات (تشمل الشيكات الصادرة وسندات الصرف النقدية)
     const totalPayments = ledger.filter(t => t.type === 'PAYMENT').reduce((sum, t) => sum + (Number(t.debit) || 0), 0)
 
     const summary = {
@@ -469,7 +588,6 @@ export async function getVendorLedger(vendorId: string) {
         vendor,
         ledger: JSON.parse(JSON.stringify(ledgerWithBalance)),
         summary,
-        products: JSON.parse(JSON.stringify(products)),
       },
     }
   } catch (error: any) {

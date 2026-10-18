@@ -160,7 +160,6 @@ export async function addBulkProducts(products: any[]) {
     }
 }
 
-// تعديل كميات الأصناف الأولية مع حساب المبيعات وكل المرتجعات السابقة بدقة
 export async function updateInitialStockBulk(items: { modelNo: string; color: string; stockQty: number }[]) {
   try {
     let updatedCount = 0;
@@ -560,9 +559,6 @@ export async function deleteAllCustomers() {
     }
 }
 
-// =========================================================================
-// جلب قائمة العملاء في لوحة التحكم مع احتساب الرصيد الصافي الأخير لكل عميل
-// =========================================================================
 export async function getAdminCustomers() {
     try {
       const custs = await prisma.customer.findMany({
@@ -586,10 +582,7 @@ export async function getAdminCustomers() {
       });
 
       const customersWithBalance = custs.map(c => {
-        // 1. إجمالي فواتير البيع (مدين - عليه)
         const totalOrders = c.orders.reduce((sum, o) => sum + (o.totalAmount || 0), 0);
-
-        // 2. إجمالي مرتجعات العميل (دائن - يخفض مديونيته)
         let totalReturns = 0;
         c.orders.forEach(o => {
           o.originalReturns.forEach(r => {
@@ -597,7 +590,6 @@ export async function getAdminCustomers() {
           });
         });
 
-        // 3. المدفوعات المسددة من العميل (وارد للخزينة يخفض مديونيته)
         let totalPaymentsIn = 0;
         let totalPaymentsOut = 0;
         c.payments.forEach(p => {
@@ -608,9 +600,6 @@ export async function getAdminCustomers() {
           }
         });
 
-        // الرصيد الصافي الأخير للعميل = الفواتير - المرتجعات - المقبوضات + الصادر له
-        // ناتج موجب (+) = العميل مدين (عليه فلوس للشركة)
-        // ناتج سالب (-) = العميل دائن (له فلوس عند الشركة)
         const balance = totalOrders - totalReturns - totalPaymentsIn + totalPaymentsOut;
 
         return {
@@ -675,21 +664,128 @@ export async function getLowStockClosedItems() {
   }
 }
 
-// ==========================================
-// 5. إدارة النقدية ودفتر الأستاذ (Cash Management & Ledger)
-// ==========================================
+// =========================================================================
+// 5. إدارة النقدية والخزائن ودفتر الأستاذ (Cash Management & Safes)
+// =========================================================================
 
-export async function getPayments() {
+// جلب الخزن مع أرصدتها الحالية وإجماليات الوارد والصادر
+export async function getSafesWithBalances() {
+  try {
+    const safes = await prisma.safe.findMany({
+      include: {
+        payments: {
+          select: { amount: true, type: true }
+        },
+        incomingTransfers: {
+          select: { amount: true, type: true }
+        }
+      },
+      orderBy: { createdAt: 'asc' }
+    });
+
+    const safesWithBalances = safes.map(s => {
+      let balance = 0;
+      let totalIn = 0;
+      let totalOut = 0;
+
+      s.payments.forEach(p => {
+        if (p.type === 'IN' || p.type === 'PAYMENT_COLLECTION') {
+          balance += p.amount;
+          totalIn += p.amount;
+        } else if (p.type === 'OUT') {
+          balance -= p.amount;
+          totalOut += p.amount;
+        } else if (p.type === 'TRANSFER') {
+          balance -= p.amount;
+          totalOut += p.amount;
+        }
+      });
+
+      s.incomingTransfers.forEach(p => {
+        balance += p.amount;
+        totalIn += p.amount;
+      });
+
+      return {
+        id: s.id,
+        name: s.name,
+        balance: Math.round(balance * 100) / 100,
+        totalIn: Math.round(totalIn * 100) / 100,
+        totalOut: Math.round(totalOut * 100) / 100,
+      };
+    });
+
+    return { success: true, safes: JSON.parse(JSON.stringify(safesWithBalances)) };
+  } catch (error: any) {
+    console.error("Error fetching safes with balances:", error);
+    return { success: false, error: error.message, safes: [] };
+  }
+}
+
+// إنشاء خزنة جديدة
+export async function createSafe(name: string) {
+  try {
+    if (!name || !name.trim()) {
+      return { success: false, error: 'اسم الخزنة مطلوب' };
+    }
+
+    const trimmed = name.trim();
+    const existing = await prisma.safe.findFirst({
+      where: { name: trimmed }
+    });
+
+    if (existing) {
+      return { success: false, error: 'توجد خزنة مسجلة مسبقاً بهذا الاسم' };
+    }
+
+    const safe = await prisma.safe.create({
+      data: { name: trimmed }
+    });
+
+    revalidatePath('/admin/cash-management');
+    revalidatePath('/admin/reports');
+    revalidatePath('/payments/new');
+
+    return { success: true, safe: JSON.parse(JSON.stringify(safe)) };
+  } catch (error: any) {
+    console.error("Error creating safe:", error);
+    return { success: false, error: error.message || 'فشل إنشاء الخزنة' };
+  }
+}
+
+// جلب حركات النقدية مع فلاتر الخزنة والتواريخ
+export async function getPayments(params?: {
+  safeId?: string
+  startDate?: string
+  endDate?: string
+}) {
     try {
+        const where: any = {}
+
+        if (params?.safeId && params.safeId !== 'ALL') {
+          where.OR = [
+            { safeId: params.safeId },
+            { targetSafeId: params.safeId }
+          ]
+        }
+
+        if (params?.startDate || params?.endDate) {
+          where.createdAt = {}
+          if (params.startDate) where.createdAt.gte = new Date(params.startDate + 'T00:00:00')
+          if (params.endDate) where.createdAt.lte = new Date(params.endDate + 'T23:59:59.999')
+        }
+
         const payments = await prisma.payment.findMany({
+            where: Object.keys(where).length > 0 ? where : undefined,
             orderBy: { createdAt: 'desc' },
             include: {
                 safe: true,
                 targetSafe: true,
                 customer: true,
+                vendor: true,
                 user: true,
             },
-            take: 200
+            take: 1500
         });
 
         const processedPayments = payments.map(p => ({
