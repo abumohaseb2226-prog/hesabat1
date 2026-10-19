@@ -29,6 +29,7 @@ export default function OffersManagementPage() {
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedVendor, setSelectedVendor] = useState('')
+  const [allVendors, setAllVendors] = useState<string[]>([]) // حفظ قائمة الموردين كاملة حتى لا تختفي عند البحث
 
   // قائمة المعرفات المحددة
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -44,14 +45,26 @@ export default function OffersManagementPage() {
 
   const [isApplying, setIsApplying] = useState(false)
 
-  // تحميل المنتجات
-  const fetchProducts = async () => {
+  // تحميل المنتجات (تقبل معاملات للبحث وإرجاع الكل عند مسح البحث)
+  const fetchProducts = async (searchQuery?: string, vendorQuery?: string) => {
     setLoading(true)
-    const res = await getProductsForOffers(searchTerm, selectedVendor)
+    const q = searchQuery !== undefined ? searchQuery : searchTerm
+    const v = vendorQuery !== undefined ? vendorQuery : selectedVendor
+
+    const res = await getProductsForOffers(q, v)
     if (res.success && res.products) {
       setProducts(res.products)
       setSelectedIds(res.products.map((p: ProductItem) => p.id))
       setCustomPrices({})
+
+      // حفظ قائمة الموردين بالكامل عند أول تحميل
+      if (!q && !v) {
+        const vSet = new Set<string>()
+        res.products.forEach((p: ProductItem) => {
+          if (p.vendor) vSet.add(p.vendor.trim())
+        })
+        setAllVendors(Array.from(vSet).sort())
+      }
     } else {
       alert(res.error || 'حدث خطأ أثناء تحميل الأصناف')
     }
@@ -59,19 +72,17 @@ export default function OffersManagementPage() {
   }
 
   useEffect(() => {
-    fetchProducts()
+    fetchProducts('', '')
   }, [])
 
-  // قائمة الموردين المتاحين للفلترة
-  const availableVendors = useMemo(() => {
-    const set = new Set<string>()
-    products.forEach(p => {
-      if (p.vendor) set.add(p.vendor)
-    })
-    return Array.from(set).sort()
-  }, [products])
+  // تفريغ البحث وإعادة عرض كل الأصناف
+  const handleResetSearch = () => {
+    setSearchTerm('')
+    setSelectedVendor('')
+    fetchProducts('', '')
+  }
 
-  // فلترة المنتجات في الـ UI بالبحث الفوري (يدعم الموديل، الوصف، اللون، والمورد)
+  // فلترة المنتجات في الـ UI بالبحث الفوري
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
       const q = searchTerm.toLowerCase().trim()
@@ -80,7 +91,7 @@ export default function OffersManagementPage() {
         p.modelNo.toLowerCase().includes(q) ||
         (p.description && p.description.toLowerCase().includes(q)) ||
         (p.color && p.color.toLowerCase().includes(q)) ||
-        (p.vendor && p.vendor.toLowerCase().includes(q)) // 👈 إضافة فلترة المورد في البحث اللحظي
+        (p.vendor && p.vendor.toLowerCase().includes(q))
 
       const matchVendor = selectedVendor === '' || p.vendor === selectedVendor
 
@@ -202,7 +213,7 @@ export default function OffersManagementPage() {
       alert(res.message)
       setCustomPrices({})
       setApplyValue('')
-      fetchProducts()
+      fetchProducts(searchTerm, selectedVendor)
     } else {
       alert('❌ خطأ: ' + res.error)
     }
@@ -249,22 +260,58 @@ export default function OffersManagementPage() {
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 🔍 بحث بالوصف أو الموديل أو المورد (مثال: "فستان", "3700", "ابوسنة")
               </label>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  placeholder="ابحث بالوصف أو رقم الموديل أو اسم المورد..."
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') fetchProducts() }}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-base font-bold focus:border-purple-500 outline-none"
-                />
+              <div className="flex gap-2 relative">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    placeholder="ابحث بالوصف أو رقم الموديل أو اسم المورد..."
+                    value={searchTerm}
+                    onChange={(e) => {
+                      const val = e.target.value
+                      setSearchTerm(val)
+                      // إذا تم مسح النص بالكامل تعود المنتجات كاملة فوراً
+                      if (val.trim() === '') {
+                        fetchProducts('', selectedVendor)
+                      }
+                    }}
+                    onKeyDown={(e) => { 
+                      if (e.key === 'Enter') fetchProducts(searchTerm, selectedVendor) 
+                    }}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 pr-3 pl-8 text-white text-base font-bold focus:border-purple-500 outline-none"
+                  />
+                  {searchTerm && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSearchTerm('')
+                        fetchProducts('', selectedVendor)
+                      }}
+                      className="absolute left-2.5 top-3.5 text-slate-400 hover:text-white font-bold text-sm"
+                      title="مسح البحث"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+
                 <button
                   type="button"
-                  onClick={fetchProducts}
-                  className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold text-sm shrink-0 transition"
+                  onClick={() => fetchProducts(searchTerm, selectedVendor)}
+                  className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-3 rounded-xl font-bold text-sm shrink-0 transition"
                 >
-                  بحث
+                  بحث 🔍
                 </button>
+
+                {(searchTerm || selectedVendor) && (
+                  <button
+                    type="button"
+                    onClick={handleResetSearch}
+                    className="bg-slate-700 hover:bg-slate-600 text-slate-200 px-4 py-3 rounded-xl font-bold text-xs shrink-0 transition border border-slate-600"
+                    title="إلغاء البحث واستعادة كل الأصناف"
+                  >
+                    عرض الكل ↺
+                  </button>
+                )}
               </div>
             </div>
 
@@ -272,11 +319,15 @@ export default function OffersManagementPage() {
               <label className="block text-xs font-bold text-slate-300 mb-1">المورد</label>
               <select
                 value={selectedVendor}
-                onChange={(e) => setSelectedVendor(e.target.value)}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setSelectedVendor(val)
+                  fetchProducts(searchTerm, val)
+                }}
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-sm font-bold focus:border-purple-500 outline-none"
               >
                 <option value="">جميع الموردين</option>
-                {availableVendors.map(v => (
+                {allVendors.map(v => (
                   <option key={v} value={v}>{v}</option>
                 ))}
               </select>
@@ -363,7 +414,7 @@ export default function OffersManagementPage() {
           </div>
         </div>
 
-        {/* 3. جدول الأصناف مع تحديد الـ Checkbox وتعديل السعر */}
+        {/* 3. جدول الأصناف */}
         <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-xl overflow-hidden">
           
           <div className="p-4 bg-slate-800/90 border-b border-slate-700 flex flex-wrap justify-between items-center gap-4">
