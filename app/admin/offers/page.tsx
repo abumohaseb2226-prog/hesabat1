@@ -18,6 +18,12 @@ interface ProductItem {
   status: string
 }
 
+// دالة جبر وتقريب السعر لأقرب عدد يقبل القسمة على 5
+const roundToNearest5 = (num: number): number => {
+  if (num <= 0) return 0
+  return Math.round(num / 5) * 5
+}
+
 export default function OffersManagementPage() {
   const [products, setProducts] = useState<ProductItem[]>([])
   const [loading, setLoading] = useState(true)
@@ -31,7 +37,9 @@ export default function OffersManagementPage() {
   const [customPrices, setCustomPrices] = useState<{ [id: string]: number }>({})
 
   // إعدادات أداة التطبيق الجماعي
-  const [updateMode, setUpdateMode] = useState<'FIXED' | 'PERCENT_DISCOUNT' | 'AMOUNT_DISCOUNT' | 'SET_DISCOUNT_PERCENT'>('FIXED')
+  const [updateMode, setUpdateMode] = useState<
+    'FIXED' | 'PERCENT_DISCOUNT' | 'PERCENT_INCREASE' | 'AMOUNT_DISCOUNT' | 'AMOUNT_INCREASE' | 'SET_DISCOUNT_PERCENT'
+  >('FIXED')
   const [applyValue, setApplyValue] = useState<string>('')
 
   const [isApplying, setIsApplying] = useState(false)
@@ -42,7 +50,6 @@ export default function OffersManagementPage() {
     const res = await getProductsForOffers(searchTerm, selectedVendor)
     if (res.success && res.products) {
       setProducts(res.products)
-      // تحديد كل المعروض افتراضياً لتوفير الوقت
       setSelectedIds(res.products.map((p: ProductItem) => p.id))
       setCustomPrices({})
     } else {
@@ -64,14 +71,16 @@ export default function OffersManagementPage() {
     return Array.from(set).sort()
   }, [products])
 
-  // فلترة المنتجات في الـ UI
+  // فلترة المنتجات في الـ UI بالبحث الفوري (يدعم الموديل، الوصف، اللون، والمورد)
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
+      const q = searchTerm.toLowerCase().trim()
       const matchSearch =
-        searchTerm.trim() === '' ||
-        p.modelNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        (p.description && p.description.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (p.color && p.color.toLowerCase().includes(searchTerm.toLowerCase()))
+        q === '' ||
+        p.modelNo.toLowerCase().includes(q) ||
+        (p.description && p.description.toLowerCase().includes(q)) ||
+        (p.color && p.color.toLowerCase().includes(q)) ||
+        (p.vendor && p.vendor.toLowerCase().includes(q)) // 👈 إضافة فلترة المورد في البحث اللحظي
 
       const matchVendor = selectedVendor === '' || p.vendor === selectedVendor
 
@@ -98,7 +107,7 @@ export default function OffersManagementPage() {
     )
   }
 
-  // حساب السعر الجديد المقترح للصنف
+  // حساب السعر الجديد المقترح للصنف مع الجبر لأقرب 5
   const getCalculatedPrice = (p: ProductItem): number => {
     if (customPrices[p.id] !== undefined) {
       return customPrices[p.id]
@@ -110,16 +119,23 @@ export default function OffersManagementPage() {
     if (updateMode === 'FIXED') {
       return val
     } else if (updateMode === 'PERCENT_DISCOUNT') {
-      const discounted = p.price * (1 - val / 100)
-      return Math.max(0, Math.round(discounted))
+      const rawPrice = p.price * (1 - val / 100)
+      return roundToNearest5(rawPrice)
+    } else if (updateMode === 'PERCENT_INCREASE') {
+      const rawPrice = p.price * (1 + val / 100)
+      return roundToNearest5(rawPrice)
     } else if (updateMode === 'AMOUNT_DISCOUNT') {
-      return Math.max(0, p.price - val)
+      const rawPrice = Math.max(0, p.price - val)
+      return roundToNearest5(rawPrice)
+    } else if (updateMode === 'AMOUNT_INCREASE') {
+      const rawPrice = p.price + val
+      return roundToNearest5(rawPrice)
     }
 
     return p.price
   }
 
-  // تطبيق التعديل الجماعي في الذاكرة أولاً
+  // تطبيق التعديل الجماعي في الذاكرة مع جبر الأرقام لأقرب 5
   const handlePreviewApply = () => {
     const val = parseFloat(applyValue)
     if (isNaN(val) || val <= 0) {
@@ -139,15 +155,19 @@ export default function OffersManagementPage() {
         if (updateMode === 'FIXED') {
           newCustoms[p.id] = val
         } else if (updateMode === 'PERCENT_DISCOUNT') {
-          newCustoms[p.id] = Math.max(0, Math.round(p.price * (1 - val / 100)))
+          newCustoms[p.id] = roundToNearest5(p.price * (1 - val / 100))
+        } else if (updateMode === 'PERCENT_INCREASE') {
+          newCustoms[p.id] = roundToNearest5(p.price * (1 + val / 100))
         } else if (updateMode === 'AMOUNT_DISCOUNT') {
-          newCustoms[p.id] = Math.max(0, p.price - val)
+          newCustoms[p.id] = roundToNearest5(Math.max(0, p.price - val))
+        } else if (updateMode === 'AMOUNT_INCREASE') {
+          newCustoms[p.id] = roundToNearest5(p.price + val)
         }
       }
     })
 
     setCustomPrices(newCustoms)
-    alert(`✅ تم تحديث الأسعار المقترحة لـ ${selectedIds.length} صنف. راجعها واضغط "حفظ وتطبيق الأسعار".`)
+    alert(`✅ تم احتساب وجبر الأسعار لأقرب 5 لـ (${selectedIds.length}) صنف بنجاح. راجعها في الجدول واضغط "حفظ وتطبيق الأسعار".`)
   }
 
   // حفظ الأسعار في قاعدة البيانات
@@ -199,7 +219,7 @@ export default function OffersManagementPage() {
             <h1 className="text-2xl md:text-3xl font-black text-white">إدارة العروض وتعديل الأسعار المجمع</h1>
           </div>
           <p className="text-slate-400 text-sm mt-1">
-            البحث في الأصناف بالوصف أو الموديل وتطبيق سعر موحد أو خصم نسبي على كل المعروض أو المحدد فقط
+            البحث في الأصناف بالوصف أو الموديل أو المورد وتطبيق سعر موحد أو تعديل نسبي (زيادة/خصم مع جبر الناتج لأقرب 5)
           </p>
         </div>
 
@@ -225,15 +245,14 @@ export default function OffersManagementPage() {
         <div className="bg-slate-800/80 border border-slate-700 p-6 rounded-2xl shadow-lg">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             
-            {/* البحث المباشر */}
             <div className="md:col-span-2">
               <label className="block text-xs font-bold text-slate-300 mb-1">
-                🔍 بحث بالوصف أو الموديل (مثال: "فستان", "بلوزة", "3700")
+                🔍 بحث بالوصف أو الموديل أو المورد (مثال: "فستان", "3700", "ابوسنة")
               </label>
               <div className="flex gap-2">
                 <input
                   type="text"
-                  placeholder="اكتب كلمة البحث هنا..."
+                  placeholder="ابحث بالوصف أو رقم الموديل أو اسم المورد..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') fetchProducts() }}
@@ -249,7 +268,6 @@ export default function OffersManagementPage() {
               </div>
             </div>
 
-            {/* فلترة بالمورد */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">المورد</label>
               <select
@@ -278,7 +296,6 @@ export default function OffersManagementPage() {
 
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
             
-            {/* نوع العرض / التعديل */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">طريقة تسعير العرض</label>
               <select
@@ -287,39 +304,41 @@ export default function OffersManagementPage() {
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-white text-sm font-bold focus:border-purple-500 outline-none"
               >
                 <option value="FIXED">سعر موحد مباشر (مثلاً 100 ج.م للكل)</option>
-                <option value="PERCENT_DISCOUNT">خصم نسبة مئوية (مثلاً خصم 15% من السعر)</option>
-                <option value="AMOUNT_DISCOUNT">خصم مبلغ ثابت (مثلاً إنقاص 20 ج.م من السعر)</option>
+                <option value="PERCENT_DISCOUNT">خصم نسبة مئوية % (مع جبر الناتج لأقرب 5)</option>
+                <option value="PERCENT_INCREASE">زيادة نسبة مئوية % (مع جبر الناتج لأقرب 5)</option>
+                <option value="AMOUNT_DISCOUNT">خصم مبلغ ثابت (إنقاص مبلغ مع الجبر لأقرب 5)</option>
+                <option value="AMOUNT_INCREASE">زيادة مبلغ ثابت (إضافة مبلغ مع الجبر لأقرب 5)</option>
                 <option value="SET_DISCOUNT_PERCENT">تحديد نسبة الخصم التلقائي % للفواتير</option>
               </select>
             </div>
 
-            {/* القيمة المطلوبة */}
             <div>
               <label className="block text-xs font-bold text-slate-300 mb-1">
                 {updateMode === 'FIXED' && 'السعر الموحد الجديد (ج.م)'}
-                {updateMode === 'PERCENT_DISCOUNT' && 'نسبة الخصم المئوية (%)'}
-                {updateMode === 'AMOUNT_DISCOUNT' && 'المبلغ المخصوم (ج.م)'}
+                {updateMode === 'PERCENT_DISCOUNT' && 'نسبة الخصم المئوية (%) [تُجبر لأقرب 5]'}
+                {updateMode === 'PERCENT_INCREASE' && 'نسبة الزيادة المئوية (%) [تُجبر لأقرب 5]'}
+                {updateMode === 'AMOUNT_DISCOUNT' && 'المبلغ المخصوم (ج.م) [يُجبر لأقرب 5]'}
+                {updateMode === 'AMOUNT_INCREASE' && 'مبلغ الزيادة (ج.م) [يُجبر لأقرب 5]'}
                 {updateMode === 'SET_DISCOUNT_PERCENT' && 'نسبة خصم الفاتورة (%)'}
               </label>
               <input
                 type="number"
                 step="0.01"
                 min="0"
-                placeholder={updateMode === 'FIXED' ? 'مثال: 150' : 'مثال: 20'}
+                placeholder={updateMode === 'FIXED' ? 'مثال: 150' : 'مثال: 10'}
                 value={applyValue}
                 onChange={(e) => setApplyValue(e.target.value)}
                 className="w-full bg-slate-900 border border-purple-500/50 rounded-xl p-3 text-white text-xl font-bold font-mono focus:border-purple-400 outline-none"
               />
             </div>
 
-            {/* أزرار الإجراء */}
             <div className="flex gap-2">
               <button
                 type="button"
                 onClick={handlePreviewApply}
                 className="flex-1 bg-purple-600 hover:bg-purple-500 text-white py-3 px-4 rounded-xl font-bold text-sm transition shadow-lg shadow-purple-900/40"
               >
-                معاينة بالجدول 👁️
+                معاينة وجبر السعر 👁️
               </button>
             </div>
 
@@ -336,10 +355,10 @@ export default function OffersManagementPage() {
 
           </div>
 
-          <div className="mt-3 text-xs text-purple-200/80 flex items-center gap-2">
+          <div className="mt-3 text-xs text-purple-200/90 flex flex-wrap items-center gap-2">
             <span>💡</span>
             <span>
-              يمكنك استبعاد أي صنف من العرض بسهولة عن طريق إزالة علامة الصح (✓) من أمامه في الجدول بالأسفل.
+              <b>قاعدة الجبر التلقائي لأقرب 5:</b> أي ناتج نسبي بالزيادة أو النقص يُجبر لأقرب 5 (مثلاً: 92 $\rightarrow$ 90، بينما 93 $\rightarrow$ 95).
             </span>
           </div>
         </div>
@@ -347,7 +366,6 @@ export default function OffersManagementPage() {
         {/* 3. جدول الأصناف مع تحديد الـ Checkbox وتعديل السعر */}
         <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-xl overflow-hidden">
           
-          {/* شريط الإحصائيات وأزرار التحديد */}
           <div className="p-4 bg-slate-800/90 border-b border-slate-700 flex flex-wrap justify-between items-center gap-4">
             <div className="flex items-center gap-4">
               <label className="flex items-center gap-2 cursor-pointer bg-slate-900 px-3 py-1.5 rounded-xl border border-slate-700 text-xs font-bold">
@@ -394,7 +412,7 @@ export default function OffersManagementPage() {
                   <th className="p-3 w-24 text-center">المخزون</th>
                   <th className="p-3 w-28 text-center">سعر التكلفة</th>
                   <th className="p-3 w-32 text-center">السعر الحالي</th>
-                  <th className="p-3 w-36 text-center text-purple-300">السعر بعد العرض</th>
+                  <th className="p-3 w-36 text-center text-purple-300">السعر بعد العرض (مقرب لـ 5)</th>
                   <th className="p-3 w-24 text-center">الفرق</th>
                 </tr>
               </thead>
@@ -424,7 +442,6 @@ export default function OffersManagementPage() {
                           isChecked ? 'bg-purple-950/20 hover:bg-purple-900/30' : 'opacity-60 hover:opacity-100 hover:bg-slate-700/30'
                         }`}
                       >
-                        {/* Checkbox التحديد والاستبعاد */}
                         <td className="p-3 text-center">
                           <input
                             type="checkbox"
@@ -462,16 +479,14 @@ export default function OffersManagementPage() {
                           {p.cost.toFixed(2)} ج.م
                         </td>
 
-                        {/* السعر الحالي */}
                         <td className="p-3 text-center font-bold text-slate-200 font-mono">
                           {p.price.toFixed(2)} ج.م
                         </td>
 
-                        {/* السعر بعد العرض (يمكن تعديله يدوياً هنا أيضاً) */}
                         <td className="p-2 text-center">
                           <input
                             type="number"
-                            step="0.01"
+                            step="1"
                             disabled={!isChecked}
                             value={customPrices[p.id] !== undefined ? customPrices[p.id] : (isChecked ? projectedPrice : p.price)}
                             onChange={(e) => {
@@ -486,10 +501,9 @@ export default function OffersManagementPage() {
                           />
                         </td>
 
-                        {/* فرق السعر */}
                         <td className="p-3 text-center font-mono text-xs font-bold">
                           {isChecked && priceDiff !== 0 ? (
-                            <span className={priceDiff < 0 ? 'text-red-400' : 'text-emerald-400'}>
+                            <span className={priceDiff < 0 ? 'text-amber-400' : 'text-emerald-400'}>
                               {priceDiff > 0 ? `+${priceDiff.toFixed(2)}` : priceDiff.toFixed(2)}
                             </span>
                           ) : (
@@ -504,7 +518,6 @@ export default function OffersManagementPage() {
             </table>
           </div>
 
-          {/* تذييل الجدول */}
           <div className="p-4 bg-slate-900 border-t border-slate-700 flex flex-col md:flex-row justify-between items-center gap-4 text-xs text-slate-400">
             <div>
               عدد الأصناف المطابقة: <b className="text-white">{filteredProducts.length}</b> صنف | الأصناف المشمولة بالعرض: <b className="text-purple-400">{selectedIds.length}</b>

@@ -23,7 +23,7 @@ async function checkAuthorizedUser() {
   return user
 }
 
-// جلب المنتجات للبحث والفلاتر
+// جلب المنتجات للبحث والفلاتر (يدعم البحث بالموديل، الوصف، اللون، واسم المورد)
 export async function getProductsForOffers(query: string = '', vendor: string = '') {
   try {
     await checkAuthorizedUser()
@@ -36,6 +36,7 @@ export async function getProductsForOffers(query: string = '', vendor: string = 
         { modelNo: { contains: q, mode: 'insensitive' } },
         { description: { contains: q, mode: 'insensitive' } },
         { color: { contains: q, mode: 'insensitive' } },
+        { vendor: { contains: q, mode: 'insensitive' } }, // 👈 البحث المباشر بالمورد
       ]
     }
 
@@ -59,7 +60,7 @@ export async function getProductsForOffers(query: string = '', vendor: string = 
         status: true
       },
       orderBy: { modelNo: 'asc' },
-      take: 1000
+      take: 2000
     })
 
     return { success: true, products: JSON.parse(JSON.stringify(products)) }
@@ -78,7 +79,6 @@ export async function applyBulkPriceUpdate(updates: { id: string; newPrice: numb
       return { success: false, error: 'لم يتم تحديد أي أصناف للتحديث' }
     }
 
-    // تنفيذ التحديث في دفعة واحدة
     await prisma.$transaction(
       updates.map((item) =>
         prisma.product.update({
