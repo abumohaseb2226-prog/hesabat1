@@ -232,6 +232,29 @@ export async function updateInitialStockBulk(items: { modelNo: string; color: st
   }
 }
 
+// ✅ دالة تصفير الرصيد الأولي للأصناف المحددة (stockQty = 0 مع بقاء currentStock دون تغيير)
+export async function resetInitialStockBulk(ids: string[]) {
+  try {
+    if (!ids || ids.length === 0) {
+      return { success: false, error: 'لم يتم تحديد أي أصناف' };
+    }
+
+    const res = await prisma.product.updateMany({
+      where: { id: { in: ids } },
+      data: { stockQty: 0 }
+    });
+
+    revalidatePath('/admin/products');
+    revalidatePath('/admin/reports');
+    revalidatePath('/admin/vendors');
+
+    return { success: true, count: res.count };
+  } catch (error: any) {
+    console.error('Error resetting initial stock bulk:', error);
+    return { success: false, error: error.message || 'حدث خطأ أثناء تصفير الرصيد الأولي' };
+  }
+}
+
 // ==========================================
 // قسم المزامنة مع جوجل شيت (Google Sheets Sync)
 // ==========================================
@@ -668,7 +691,6 @@ export async function getLowStockClosedItems() {
 // 5. إدارة النقدية والخزائن ودفتر الأستاذ (Cash Management & Safes)
 // =========================================================================
 
-// جلب الخزن مع أرصدتها الحالية وإجماليات الوارد والصادر
 export async function getSafesWithBalances() {
   try {
     const safes = await prisma.safe.findMany({
@@ -722,7 +744,6 @@ export async function getSafesWithBalances() {
   }
 }
 
-// إنشاء خزنة جديدة
 export async function createSafe(name: string) {
   try {
     if (!name || !name.trim()) {
@@ -753,7 +774,6 @@ export async function createSafe(name: string) {
   }
 }
 
-// جلب حركات النقدية مع فلاتر الخزنة والتواريخ
 export async function getPayments(params?: {
   safeId?: string
   startDate?: string

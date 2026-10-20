@@ -139,7 +139,7 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
           }
         })
 
-        // 2. تحديث المنتجات وإضافة بنود الفاتورة في PurchaseInvoiceItem
+        // 2. تحديث المخزون الفعلي فقط للأصناف (عدم لمس stockQty الرصيد الافتتاحي)
         for (const item of finalItems) {
           let product = await tx.product.findUnique({
             where: {
@@ -148,13 +148,12 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
           })
 
           const stockChange = isPurchase ? item.quantity : -item.quantity
-          const stockQtyDelta = isPurchase ? item.quantity : 0
 
           if (product) {
+            // صنف موجود مسبقاً: نزيد الرصيد الفعلي الحالي فقط
             product = await tx.product.update({
               where: { id: product.id },
               data: {
-                stockQty: { increment: stockQtyDelta },
                 currentStock: { increment: stockChange },
                 cost: item.cost > 0 ? item.cost : product.cost,
                 vendor: vendor.name,
@@ -163,12 +162,13 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
               }
             })
           } else {
+            // صنف جديد دخل من فاتورة المشتريات: رصيده الافتتاحي صفر
             product = await tx.product.create({
               data: {
                 modelNo: item.modelNo,
                 color: item.color,
-                stockQty: isPurchase ? item.quantity : 0,
-                currentStock: stockChange,
+                stockQty: 0, // ✅ الرصيد الافتتاحي صفر دائماً لفواتير الشراء
+                currentStock: stockChange, // الرصيد المتاح هو كمية الفاتورة
                 cost: item.cost,
                 price: item.price,
                 vendor: vendor.name,
@@ -178,7 +178,7 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
             })
           }
 
-          // حفظ البند في جدول بنود الفاتورة
+          // حفظ البند في بنود الفاتورة
           await tx.purchaseInvoiceItem.create({
             data: {
               invoiceId: purchaseInvoice.id,
@@ -191,7 +191,7 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
           })
         }
 
-        // 3. ✅ سطر مالي واحد فقط في كشف حساب المورد بإجمالي الفاتورة!
+        // 3. سطر مالي واحد في كشف حساب المورد بإجمالي الفاتورة
         const totalPieces = finalItems.reduce((s, it) => s + it.quantity, 0)
         await tx.vendorTransaction.create({
           data: {
@@ -264,7 +264,6 @@ export async function getPurchaseInvoiceDetails(invoiceNumber: string) {
   try {
     await checkAuthorizedUser()
 
-    // 1. البحث أولاً في جدول فواتير المشتريات المستقل
     const invoice = await prisma.purchaseInvoice.findUnique({
       where: { invoiceNo: invoiceNumber },
       include: {
@@ -301,7 +300,6 @@ export async function getPurchaseInvoiceDetails(invoiceNumber: string) {
       }
     }
 
-    // 2. كمرجعية للفواتير القديمة المسجلة قبل التحديث
     const transactions = await prisma.vendorTransaction.findMany({
       where: { reference: invoiceNumber },
       include: { product: true, vendor: true }
@@ -367,13 +365,11 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
           await tx.product.update({
             where: { id: it.productId },
             data: {
-              stockQty: { increment: isOldPurchase ? -it.quantity : 0 },
               currentStock: { increment: delta }
             }
           })
         }
       } else {
-        // فواتير سابقة
         const oldTrans = await tx.vendorTransaction.findMany({ where: { reference: invoiceNumber } })
         for (const t of oldTrans) {
           if (t.productId && t.quantity) {
@@ -431,7 +427,6 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
           product = await tx.product.update({
             where: { id: product.id },
             data: {
-              stockQty: { increment: isPurchase ? qty : 0 },
               currentStock: { increment: stockChange },
               cost: cost > 0 ? cost : product.cost,
               vendor: vendor.name,
@@ -444,7 +439,7 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
             data: {
               modelNo,
               color,
-              stockQty: isPurchase ? qty : 0,
+              stockQty: 0, // ✅ دائماً صفر
               currentStock: stockChange,
               cost,
               price,
@@ -535,14 +530,12 @@ export async function cancelVendorInvoice(invoiceNumber: string) {
           await tx.product.update({
             where: { id: it.productId },
             data: {
-              stockQty: { increment: isPurchase ? -it.quantity : 0 },
               currentStock: { increment: delta }
             }
           })
         }
         await tx.purchaseInvoice.delete({ where: { id: invoice.id } })
       } else {
-        // حركات قديمة
         const oldTrans = await tx.vendorTransaction.findMany({ where: { reference: invoiceNumber } })
         for (const t of oldTrans) {
           if (t.productId && t.quantity) {

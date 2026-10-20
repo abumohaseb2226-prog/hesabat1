@@ -1,729 +1,1080 @@
 'use client'
 
-import { 
-    addProduct, 
-    getProducts, 
-    deleteProduct, 
-    addBulkProducts, 
-    deleteBulkProducts, 
-    deleteAllProducts, 
-    updateProduct, 
-    syncFromGoogleSheets, 
-    getSyncOperations, 
-    revertSyncOperation,
-    updateInitialStockBulk
-} from '@/app/admin-actions';
-import { useState, useEffect, useMemo } from 'react';
-import * as XLSX from 'xlsx';
-
-function AdminSyncControl({ onRefresh }: { onRefresh: () => void }) {
-    const [startDate, setStartDate] = useState("2025-06-01");
-    const [isSyncing, setIsSyncing] = useState(false);
-    const [syncHistory, setSyncHistory] = useState<any[]>([]);
-    const [isReverting, setIsReverting] = useState<string | null>(null);
-
-    useEffect(() => {
-        loadHistory();
-    }, []);
-
-    const loadHistory = async () => {
-        const history = await getSyncOperations();
-        setSyncHistory(history);
-    };
-
-    const handleSync = async () => {
-        if (!confirm(`سيتم سحب كافة البيانات المضافة في جوجل شيت منذ يوم ${startDate}، هل أنت متأكد؟`)) return;
-        
-        setIsSyncing(true);
-        const result = await syncFromGoogleSheets(startDate);
-        
-        if (result.success) {
-            alert(result.message);
-            loadHistory();
-            onRefresh();
-        } else {
-            alert("فشل المزامنة: " + result.error);
-        }
-        setIsSyncing(false);
-    };
-
-    const handleRevert = async (op: any) => {
-        if (!confirm(`تحذير: سيتم التراجع عن هذه العملية التي شملت ${op.itemsCount} صنف.\nسيتم خصم الكميات المضافة وإلغاء العملية.\nهل أنت متأكد؟`)) return;
-        
-        setIsReverting(op.id);
-        const res = await revertSyncOperation(op.id);
-        setIsReverting(null);
-
-        if (res.success) {
-            alert("تم التراجع بنجاح وإلغاء العملية.");
-            loadHistory();
-            onRefresh();
-        } else {
-            alert("خطأ: " + res.error);
-        }
-    };
-
-    return (
-        <div className="bg-white p-4 rounded-2xl shadow-sm border border-green-100 flex flex-col gap-4">
-            <div className="flex flex-wrap items-center gap-4 border-b border-gray-100 pb-4">
-                <div className="flex flex-col gap-1">
-                    <label className="text-xs font-bold text-gray-500 mr-1">بدء المزامنة من تاريخ:</label>
-                    <input 
-                        type="date" 
-                        value={startDate} 
-                        onChange={(e) => setStartDate(e.target.value)}
-                        className="p-2 border rounded-xl outline-none focus:ring-2 focus:ring-green-500 font-bold text-gray-700"
-                    />
-                </div>
-
-                <button 
-                    onClick={handleSync}
-                    disabled={isSyncing}
-                    className={`mt-5 bg-green-600 text-white px-8 py-2.5 rounded-xl font-black shadow-lg shadow-green-100 transition-all active:scale-95 flex items-center gap-2 ${isSyncing ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'}`}
-                >
-                    {isSyncing ? (
-                        <><span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span> جاري السحب...</>
-                    ) : (
-                        <><span>🔄 مزامنة جوجل شيت</span></>
-                    )}
-                </button>
-            </div>
-
-            {syncHistory.length > 0 && (
-                <div className="w-full">
-                    <h4 className="text-xs font-bold text-gray-500 mb-2">أحدث عمليات المزامنة:</h4>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-xs text-right border-collapse">
-                            <thead>
-                                <tr className="bg-gray-50 text-gray-600">
-                                    <th className="p-2 border">وقت العملية</th>
-                                    <th className="p-2 border">تاريخ الاستهداف</th>
-                                    <th className="p-2 border">عدد الأصناف</th>
-                                    <th className="p-2 border text-center">إجراء</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {syncHistory.map((op) => (
-                                    <tr key={op.id} className="border-b hover:bg-gray-50">
-                                        <td className="p-2 border font-mono text-[10px]" dir="ltr">
-                                            {new Date(op.createdAt).toLocaleString('en-GB')}
-                                        </td>
-                                        <td className="p-2 border font-bold text-blue-600">
-                                            {new Date(op.startDate).toLocaleDateString('en-GB')}
-                                        </td>
-                                        <td className="p-2 border font-bold text-green-600">
-                                            {op.itemsCount} حركة
-                                        </td>
-                                        <td className="p-2 border text-center">
-                                            <button 
-                                                onClick={() => handleRevert(op)}
-                                                disabled={isReverting === op.id}
-                                                className="bg-red-50 text-red-600 px-3 py-1 rounded font-bold hover:bg-red-100 disabled:opacity-50"
-                                            >
-                                                {isReverting === op.id ? 'جاري الإلغاء...' : '↩️ تراجع'}
-                                            </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-}
+import { useState, useEffect, useMemo, useRef } from 'react'
+import Link from 'next/link'
+import * as XLSX from 'xlsx'
+import {
+  getProducts,
+  addProduct,
+  updateProduct,
+  deleteProduct,
+  deleteBulkProducts,
+  deleteAllProducts,
+  addBulkProducts,
+  updateInitialStockBulk,
+  resetInitialStockBulk,
+  syncFromGoogleSheets,
+  getSyncOperations,
+  revertSyncOperation
+} from '@/app/admin-actions'
 
 export default function ProductsPage() {
-  const [products, setProducts] = useState<any[]>([]);
-  const [selectedIds, setSelectedIds] = useState<string[]>([]);
-  const [searchTerm, setSearchTerm] = useState('');
-  
-  // Adding States
-  const [modelNo, setModelNo] = useState('');
-  const [description, setDescription] = useState('');
-  const [vendor, setVendor] = useState('');
-  const [price, setPrice] = useState('');
-  const [cost, setCost] = useState('');
-  const [discount, setDiscount] = useState('0');
-  const [status, setStatus] = useState('OPEN');
-  const [colors, setColors] = useState([{ color: '', stock: '' }]);
+  const [products, setProducts] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
 
-  // Edit States
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<any>(null);
+  // الفلاتر والبحث
+  const [searchTerm, setSearchTerm] = useState('')
+  const [vendorFilter, setVendorFilter] = useState('ALL')
+  const [statusFilter, setStatusFilter] = useState('ALL')
 
-  // Upload Bulk Products States
-  const [isUploading, setIsUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadStatusText, setUploadStatusText] = useState('');
+  // التحديد المتعدد مع دعم Shift + Click
+  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number | null>(null)
 
-  // Upload Initial Stock Adjustment States
-  const [isUpdatingStock, setIsUpdatingStock] = useState(false);
-  const [stockProgress, setStockProgress] = useState(0);
-  const [stockStatusText, setStockStatusText] = useState('');
+  // مؤشرات العمليات والرفع
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [isResettingInitial, setIsResettingInitial] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadProgressText, setUploadProgressText] = useState('')
 
-  // Deleting State
-  const [isDeleting, setIsDeleting] = useState(false);
+  // أقسام الأكورديون / النوافذ
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [showExcelSection, setShowExcelSection] = useState(false)
+  const [showSyncSection, setShowSyncSection] = useState(false)
+
+  // مودال التعديل
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false)
+  const [editingProduct, setEditingProduct] = useState<any>(null)
+  const [isUpdating, setIsUpdating] = useState(false)
+
+  // فورم إضافة صنف جديد
+  const [newProduct, setNewProduct] = useState({
+    modelNo: '',
+    description: '',
+    vendor: '',
+    price: '',
+    cost: '',
+    discount: '0',
+    status: 'OPEN',
+    colors: [{ color: '', stock: '0' }]
+  })
+
+  // مزامنة جوجل شيت
+  const [syncStartDate, setSyncStartDate] = useState(new Date().toISOString().split('T')[0])
+  const [syncOperations, setSyncOperations] = useState<any[]>([])
+  const [isSyncing, setIsSyncing] = useState(false)
+
+  // تحميل البيانات
+  const refreshProducts = async () => {
+    setLoading(true)
+    const data = await getProducts()
+    setProducts(data || [])
+    setSelectedIds([])
+    setLastSelectedIndex(null)
+    setLoading(false)
+  }
+
+  const loadSyncHistory = async () => {
+    const ops = await getSyncOperations()
+    setSyncOperations(ops || [])
+  }
 
   useEffect(() => {
-    refreshProducts();
-  }, []);
+    refreshProducts()
+    loadSyncHistory()
+  }, [])
 
-  const refreshProducts = () => {
-    getProducts().then(res => {
-        setProducts(res);
-        setSelectedIds([]);
-    });
-  };
+  // قائمة الموردين المتاحين للفلترة
+  const availableVendors = useMemo(() => {
+    const vSet = new Set<string>()
+    products.forEach(p => {
+      if (p.vendor && p.vendor.trim() !== '') {
+        vSet.add(p.vendor.trim())
+      }
+    })
+    return Array.from(vSet).sort()
+  }, [products])
 
+  // فلترة المنتجات
   const filteredProducts = useMemo(() => {
-    return products.filter(p => 
-        p.modelNo.toLowerCase().includes(searchTerm.toLowerCase()) || 
-        (p.color && p.color.toLowerCase().includes(searchTerm.toLowerCase())) ||
-        (p.description && p.description.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
-  }, [products, searchTerm]);
+    return products.filter(p => {
+      if (searchTerm.trim() !== '') {
+        const q = searchTerm.toLowerCase().trim()
+        const matchModel = p.modelNo?.toLowerCase().includes(q)
+        const matchColor = p.color?.toLowerCase().includes(q)
+        const matchVendor = p.vendor?.toLowerCase().includes(q)
+        const matchDesc = p.description?.toLowerCase().includes(q)
+        if (!matchModel && !matchColor && !matchVendor && !matchDesc) return false
+      }
 
-  const handleAddColorField = () => {
-    setColors([...colors, { color: '', stock: '' }]);
-  };
+      if (vendorFilter !== 'ALL') {
+        if (!p.vendor || p.vendor.trim() !== vendorFilter) return false
+      }
 
-  const handleColorChange = (index: number, field: string, value: string) => {
-    const newColors: any = [...colors];
-    newColors[index][field] = value;
-    setColors(newColors);
-  };
+      if (statusFilter !== 'ALL') {
+        if (p.status !== statusFilter) return false
+      }
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!modelNo || !price) return alert('أكمل البيانات');
+      return true
+    })
+  }, [products, searchTerm, vendorFilter, statusFilter])
 
-    const res = await addProduct({
-        modelNo, description, vendor, price, cost, discount, status, colors
-    });
+  // =========================================================================
+  // ✅ التحديد السريع مع دعم زر Shift + Click
+  // =========================================================================
+  const handleCheckboxClick = (e: React.MouseEvent<HTMLInputElement>, id: string, index: number) => {
+    const isChecked = (e.target as HTMLInputElement).checked
 
-    if (res.success) {
-        alert('تمت الإضافة');
-        setModelNo(''); setDescription(''); setVendor(''); setPrice(''); setCost(''); setDiscount('0');
-        setColors([{ color: '', stock: '' }]);
-        refreshProducts();
-    } else {
-        alert('خطأ: ' + res.error);
-    }
-  };
+    if (e.shiftKey && lastSelectedIndex !== null) {
+      const start = Math.min(lastSelectedIndex, index)
+      const end = Math.max(lastSelectedIndex, index)
+      const rangeIds = filteredProducts.slice(start, end + 1).map((p: any) => p.id)
 
-  // --- Excel Templates ---
-  const downloadTemplate = () => {
-    const templateData = [
-        { modelNo: "1001", description: "وصف", vendor: "مورد", color: "أحمر", price: 150, cost: 120, discount: 10, stockQty: 50, status: "OPEN" },
-        { modelNo: "1001", description: "نفس الموديل", vendor: "مورد", color: "أزرق", price: 150, cost: 120, discount: 10, stockQty: 30, status: "OPEN" }
-    ];
-    const ws = XLSX.utils.json_to_sheet(templateData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Template");
-    XLSX.writeFile(wb, "Products_Template.xlsx");
-  };
-
-  // نموذج تعديل المخزون الأولي المطلوب (الموديل، اللون، المخزون)
-  const downloadStockTemplate = () => {
-    const templateData = [
-        { "الموديل": "1001", "اللون": "أحمر", "المخزون": 100 },
-        { "الموديل": "1001", "اللون": "أزرق", "المخزون": 75 },
-        { "الموديل": "2002", "اللون": "أسود", "المخزون": 50 }
-    ];
-    const ws = XLSX.utils.json_to_sheet(templateData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "InitialStock");
-    XLSX.writeFile(wb, "Initial_Stock_Template.xlsx");
-  };
-
-  // رفع وإضافة الأصناف الجديدة
-  const handleFileUpload = (e: any) => {
-    const file = e.target.files[0];
-    if(!file) return;
-
-    setUploadProgress(0);
-    setUploadStatusText('');
-    
-    const reader = new FileReader();
-    reader.onload = async (evt: any) => {
-        const bstr = evt.target.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const data = XLSX.utils.sheet_to_json(ws);
-        
-        if(confirm(`تم قراءة ${data.length} صنف. هل تريد البدء في الرفع؟`)) {
-            setIsUploading(true);
-            const BATCH_SIZE = 100;
-            let successCount = 0;
-            let failCount = 0;
-            const total = data.length;
-
-            for (let i = 0; i < total; i += BATCH_SIZE) {
-                const chunk = data.slice(i, i + BATCH_SIZE);
-                setUploadStatusText(`جاري معالجة المجموعة ${Math.floor(i/BATCH_SIZE) + 1} من ${Math.ceil(total/BATCH_SIZE)}...`);
-                
-                try {
-                    const res = await addBulkProducts(chunk as any[]);
-                    if (res.success) {
-                        successCount += (res.count || 0);
-                    } else {
-                        console.error("Batch failure:", res.error);
-                        failCount += chunk.length;
-                    }
-                } catch (err) {
-                    console.error("Critical error in batch:", err);
-                    failCount += chunk.length;
-                }
-
-                const percent = Math.round(((i + chunk.length) / total) * 100);
-                setUploadProgress(percent);
-            }
-
-            setIsUploading(false);
-            setUploadStatusText(`✅ اكتملت العملية. ناجح: ${successCount} | فشل: ${failCount}`);
-            alert(`تم الانتهاء من المعالجة:\n- أصناف تم رفعها/تحديثها: ${successCount}\n- أصناف فشلت: ${failCount}`);
-            refreshProducts();
-            e.target.value = '';
-        }
-    };
-    reader.readAsBinaryString(file);
-  };
-
-  // رفع ومعالجة ملف تعديل الكميات الأولية
-  const handleStockAdjustmentUpload = (e: any) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setStockProgress(0);
-    setStockStatusText('');
-
-    const reader = new FileReader();
-    reader.onload = async (evt: any) => {
-      try {
-        const bstr = evt.target.result;
-        const wb = XLSX.read(bstr, { type: 'binary' });
-        const wsname = wb.SheetNames[0];
-        const ws = wb.Sheets[wsname];
-        const rawData = XLSX.utils.sheet_to_json(ws) as any[];
-
-        if (!rawData || rawData.length === 0) {
-          alert("الملف فارغ أو لا يحتوي على صفوف بيانات صالحة");
-          e.target.value = '';
-          return;
-        }
-
-        // استخراج الأعمدة بمرونة سواء بالعربية أو الإنجليزية
-        const parsedItems = rawData.map(row => {
-          const modelNo = String(row['الموديل'] || row['modelNo'] || row['كود_الموديل'] || row['الكود'] || '').trim();
-          const color = String(row['اللون'] || row['color'] || '').trim();
-          const stockQty = Number(row['المخزون'] || row['stockQty'] || row['الكمية'] || row['كمية'] || 0);
-
-          return { modelNo, color, stockQty };
-        }).filter(item => item.modelNo !== '' && item.color !== '' && !isNaN(item.stockQty));
-
-        if (parsedItems.length === 0) {
-          alert("لم يتم العثور على أعمدة صحيحة. تأكد أن الملف يحتوي على: (الموديل، اللون، المخزون)");
-          e.target.value = '';
-          return;
-        }
-
-        const confirmMsg = `تم استخراج ${parsedItems.length} صنف من الملف.\nسيتم تغيير وتحديث الكميات الأولية لجميع هذه الأصناف وإعادة ضبط الرصيد الحالي.\nهل أنت متأكد من الاستمرار؟`;
-        if (!confirm(confirmMsg)) {
-          e.target.value = '';
-          return;
-        }
-
-        setIsUpdatingStock(true);
-        const BATCH_SIZE = 100;
-        let totalUpdated = 0;
-        let totalNotFound = 0;
-        const total = parsedItems.length;
-
-        for (let i = 0; i < total; i += BATCH_SIZE) {
-          const chunk = parsedItems.slice(i, i + BATCH_SIZE);
-          setStockStatusText(`جاري تحديث المخزون من ${i + 1} إلى ${Math.min(i + BATCH_SIZE, total)}...`);
-
-          const res = await updateInitialStockBulk(chunk);
-          if (res.success) {
-            totalUpdated += (res.updatedCount || 0);
-            totalNotFound += (res.notFoundCount || 0);
+      setSelectedIds((prev: string[]) => {
+        const nextSet = new Set(prev)
+        rangeIds.forEach(rangeId => {
+          if (isChecked) {
+            nextSet.add(rangeId)
           } else {
-            console.error("Stock update error:", res.error);
+            nextSet.delete(rangeId)
           }
-
-          const percent = Math.round(((i + chunk.length) / total) * 100);
-          setStockProgress(percent);
-        }
-
-        setIsUpdatingStock(false);
-        setStockStatusText(`✅ تم الانتهاء بنجاح: تم تحديث ${totalUpdated} صنف | لم يتم العثور على ${totalNotFound} صنف.`);
-        alert(`✅ تم تحديث الكميات الأولية بنجاح:\n- تم التحديث: ${totalUpdated} صنف.\n- غير موجودين: ${totalNotFound} صنف.`);
-        refreshProducts();
-        e.target.value = '';
-      } catch (err: any) {
-        console.error(err);
-        alert("حدث خطأ أثناء قراءة الملف");
-        setIsUpdatingStock(false);
-        e.target.value = '';
-      }
-    };
-    reader.readAsBinaryString(file);
-  };
-
-  // --- Delete Logic ---
-  const handleDelete = async (id: string) => {
-    if (confirm('حذف هذا الصنف نهائياً؟')) {
-      setIsDeleting(true);
-      const res = await deleteProduct(id);
-      setIsDeleting(false);
-
-      if(res.success) {
-          refreshProducts();
-      } else {
-          alert('❌ فشل الحذف: ' + res.error);
-      }
+        })
+        return Array.from(nextSet)
+      })
+    } else {
+      setSelectedIds((prev: string[]) =>
+        isChecked ? [...prev, id] : prev.filter(item => item !== id)
+      )
     }
-  };
 
-  const handleDeleteSelected = async () => {
-    if(selectedIds.length === 0) return;
-    if(confirm(`هل أنت متأكد من محاولة حذف ${selectedIds.length} صنف؟`)) {
-        setIsDeleting(true);
-        const res = await deleteBulkProducts(selectedIds);
-        setIsDeleting(false);
+    setLastSelectedIndex(index)
+  }
 
-        if(res.success) {
-            alert(`✅ تقرير الحذف:\n- تم حذف: ${res.deleted} صنف.\n- فشل حذف: ${res.failed} صنف (مرتبطة بطلبات بيع).`);
-            refreshProducts();
-        } else {
-            alert('حدث خطأ غير متوقع');
-        }
-    }
-  };
+  const isAllSelected = filteredProducts.length > 0 && filteredProducts.every(p => selectedIds.includes(p.id))
 
-  const handleDeleteAll = async () => {
-    const confirm1 = confirm("⚠️ تحذير خطير!\nهل أنت متأكد أنك تريد حذف جميع الأصناف من النظام؟");
-    if(confirm1) {
-        if(confirm("سيتم حذف الأصناف التي ليس لها مبيعات فقط.\nهل تريد الاستمرار؟")) {
-            setIsDeleting(true);
-            const res = await deleteAllProducts();
-            setIsDeleting(false);
-
-            if(res.success) {
-                alert(`✅ تقرير الحذف الشامل:\n- تم حذف: ${res.deleted} صنف.\n- متبقي: ${res.failed} صنف.`);
-                refreshProducts();
-            } else {
-                alert("خطأ: " + res.error);
-            }
-        }
+  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedIds(filteredProducts.map(p => p.id))
+    } else {
+      setSelectedIds([])
     }
   }
 
-  // Helper Logic
-  const handleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
-      if(e.target.checked) setSelectedIds(filteredProducts.map(p => p.id));
-      else setSelectedIds([]);
-  };
+  // =========================================================================
+  // ✅ تصفير الرصيد الأولي للأصناف المحددة (stockQty = 0)
+  // =========================================================================
+  const handleResetInitialStock = async () => {
+    if (selectedIds.length === 0) return
 
-  const handleSelectOne = (id: string) => {
-      if(selectedIds.includes(id)) setSelectedIds(selectedIds.filter(itemId => itemId !== id));
-      else setSelectedIds([...selectedIds, id]);
-  };
+    const confirmMsg = `هل أنت متأكد من تصفير الرصيد الأولي لـ (${selectedIds.length}) صنف محدد؟\n\n✓ سيصبح المخزون الأولي = 0.\n✓ الرصيد المتاح للبيع سيظل كما هو دون تغيير.\n✓ سيتم تصحيح كشف حساب المورد فوراً.`
 
-  // Edit Logic
-  const handleEditClick = (product: any) => {
-      setEditingProduct({ ...product });
-      setIsEditModalOpen(true);
-  };
+    if (!confirm(confirmMsg)) return
 
-  const handleEditSave = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if(!editingProduct) return;
-      
-      const res = await updateProduct(editingProduct.id, editingProduct);
-      if(res.success) {
-          alert('تم التعديل بنجاح');
-          setIsEditModalOpen(false);
-          setEditingProduct(null);
-          refreshProducts();
-      } else {
-          alert('خطأ: ' + res.error);
+    setIsResettingInitial(true)
+    const res = await resetInitialStockBulk(selectedIds)
+    setIsResettingInitial(false)
+
+    if (res.success) {
+      alert(`✅ تم بنجاح تصفير الرصيد الأولي لـ ${res.count} صنف.`)
+      setSelectedIds([])
+      setLastSelectedIndex(null)
+      refreshProducts()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  // =========================================================================
+  // 📥 أوبشنات الإكسيل (استيراد أصناف + تعديل الكميات + تحميل النماذج)
+  // =========================================================================
+
+  // 1. تحميل نموذج استيراد الأصناف الجديدة
+  const downloadProductTemplate = () => {
+    const templateData = [
+      { modelNo: "4805", color: "أسود", vendor: "رؤية شتوي", price: 310, cost: 234, stockQty: 10, discount: 0, description: "صنف تجريبي", status: "OPEN" },
+      { modelNo: "4805", color: "كحلي", vendor: "رؤية شتوي", price: 310, cost: 234, stockQty: 8, discount: 0, description: "صنف تجريبي", status: "OPEN" }
+    ]
+    const ws = XLSX.utils.json_to_sheet(templateData)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, "Products")
+    XLSX.writeFile(wb, "Products_Template.xlsx")
+  }
+
+  // رفع ملف أصناف جديدة من الإكسيل
+  const handleUploadProductsExcel = (e: any) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = async (evt: any) => {
+      try {
+        const bstr = evt.target.result
+        const wb = XLSX.read(bstr, { type: 'binary' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const data = XLSX.utils.sheet_to_json(ws) as any[]
+
+        if (confirm(`تم قراءة ${data.length} صنف من الملف. هل تريد بدء الاستيراد؟`)) {
+          setIsUploading(true)
+          const BATCH_SIZE = 200
+          let successCount = 0
+
+          for (let i = 0; i < data.length; i += BATCH_SIZE) {
+            const chunk = data.slice(i, i + BATCH_SIZE)
+            setUploadProgressText(`جاري معالجة الأصناف من ${i + 1} إلى ${Math.min(i + BATCH_SIZE, data.length)}...`)
+            const res = await addBulkProducts(chunk)
+            if (res.success) successCount += (res.count || 0)
+          }
+
+          setIsUploading(false)
+          setUploadProgressText('')
+          alert(`✅ تم الانتهاء بنجاح! تم استيراد/تحديث ${successCount} صنف.`)
+          refreshProducts()
+          e.target.value = ''
+        }
+      } catch (err: any) {
+        setIsUploading(false)
+        alert('❌ خطأ في معالجة ملف الإكسيل: ' + err.message)
       }
-  };
+    }
+    reader.readAsBinaryString(file)
+  }
+
+  // 2. تحميل نموذج تعديل المخزون الأولي
+  const downloadStockTemplate = () => {
+    const templateData = [
+      { modelNo: "4805", color: "أسود", stockQty: 12 },
+      { modelNo: "4805", color: "كحلي", stockQty: 15 }
+    ]
+    const ws = XLSX.utils.json_to_sheet(templateData)
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, "StockUpdate")
+    XLSX.writeFile(wb, "Initial_Stock_Template.xlsx")
+  }
+
+  // رفع ملف إكسيل لتحديث وتعديل المخزون الأولي
+  const handleUploadInitialStockExcel = (e: any) => {
+    const file = e.target.files[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = async (evt: any) => {
+      try {
+        const bstr = evt.target.result
+        const wb = XLSX.read(bstr, { type: 'binary' })
+        const ws = wb.Sheets[wb.SheetNames[0]]
+        const data = XLSX.utils.sheet_to_json(ws) as any[]
+
+        if (confirm(`تم قراءة ${data.length} سطر لتحديث المخزون الأولي. هل تريد المتابعة؟`)) {
+          setIsUploading(true)
+          setUploadProgressText('جاري تحديث الكميات وإعادة ضبط الرصيد المتاح...')
+          const res = await updateInitialStockBulk(data)
+          setIsUploading(false)
+          setUploadProgressText('')
+
+          if (res.success) {
+            alert(`✅ تقرير التحديث:\n- تم تحديث: ${res.updatedCount} صنف بنجاح.\n- لم يتم العثور على: ${res.notFoundCount} صنف.`)
+            refreshProducts()
+          } else {
+            alert('❌ فشل التحديث: ' + res.error)
+          }
+          e.target.value = ''
+        }
+      } catch (err: any) {
+        setIsUploading(false)
+        alert('❌ خطأ في قراءة الملف: ' + err.message)
+      }
+    }
+    reader.readAsBinaryString(file)
+  }
+
+  // =========================================================================
+  // 🔄 مزامنة جوجل شيت (Google Sheets)
+  // =========================================================================
+  const handleSyncSheets = async () => {
+    if (!syncStartDate) return alert('يرجى تحديد تاريخ البدء')
+    setIsSyncing(true)
+    const res = await syncFromGoogleSheets(syncStartDate)
+    setIsSyncing(false)
+
+    if (res.success) {
+      alert(res.message)
+      refreshProducts()
+      loadSyncHistory()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  const handleRevertSync = async (opId: string) => {
+    if (!confirm('هل أنت متأكد من التراجع عن هذه المزامنة؟')) return
+    const res = await revertSyncOperation(opId)
+    if (res.success) {
+      alert('✅ تم التراجع عن المزامنة بنجاح')
+      refreshProducts()
+      loadSyncHistory()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  // =========================================================================
+  // ➕ إضافة صنف جديد يدوياً مع جدول الألوان
+  // =========================================================================
+  const handleAddColorRow = () => {
+    setNewProduct(prev => ({
+      ...prev,
+      colors: [...prev.colors, { color: '', stock: '0' }]
+    }))
+  }
+
+  const handleRemoveColorRow = (index: number) => {
+    if (newProduct.colors.length <= 1) return
+    setNewProduct(prev => ({
+      ...prev,
+      colors: prev.colors.filter((_, i) => i !== index)
+    }))
+  }
+
+  const handleSaveNewProduct = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!newProduct.modelNo.trim() || !newProduct.price) {
+      return alert('رقم الموديل والسعر مطلوبان')
+    }
+
+    const validColors = newProduct.colors.filter(c => c.color.trim() !== '')
+    if (validColors.length === 0) {
+      return alert('يجب إدخال لون واحد على الأقل')
+    }
+
+    const res = await addProduct({
+      ...newProduct,
+      colors: validColors
+    })
+
+    if (res.success) {
+      alert('✅ تمت إضافة الصنف بنجاح')
+      setNewProduct({
+        modelNo: '',
+        description: '',
+        vendor: '',
+        price: '',
+        cost: '',
+        discount: '0',
+        status: 'OPEN',
+        colors: [{ color: '', stock: '0' }]
+      })
+      setShowAddForm(false)
+      refreshProducts()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  // =========================================================================
+  // الحذف (محدد / الكل)
+  // =========================================================================
+  const handleDeleteSelected = async () => {
+    if (selectedIds.length === 0) return
+    if (!confirm(`هل أنت متأكد من حذف (${selectedIds.length}) صنف محدد؟`)) return
+
+    setIsDeleting(true)
+    const res = await deleteBulkProducts(selectedIds)
+    setIsDeleting(false)
+
+    if (res.success) {
+      alert(`✅ تقرير الحذف:\n- تم حذف: ${res.deleted} صنف.\n- تعذر حذف: ${res.failed} صنف لوجود أوردرات مرتبطة بها.`)
+      setSelectedIds([])
+      setLastSelectedIndex(null)
+      refreshProducts()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  const handleDeleteAll = async () => {
+    if (!confirm('⚠️ تحذير: سيتم حذف جميع الأصناف غير المرتبطة بأوردرات.\nهل أنت متأكد تماماً؟')) return
+    setIsDeleting(true)
+    const res = await deleteAllProducts()
+    setIsDeleting(false)
+
+    if (res.success) {
+      alert(`✅ تم حذف ${res.deleted} صنف. المتبقي: ${res.failed} صنف مرتبط بأوردرات.`)
+      refreshProducts()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  const handleDeleteOne = async (id: string, modelNo: string) => {
+    if (!confirm(`هل تريد حذف الصنف موديل: ${modelNo}؟`)) return
+    const res = await deleteProduct(id)
+    if (res.success) {
+      alert('✅ تم الحذف بنجاح')
+      refreshProducts()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  // تعديل صنف
+  const handleEditClick = (product: any) => {
+    setEditingProduct({ ...product })
+    setIsEditModalOpen(true)
+  }
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingProduct) return
+
+    setIsUpdating(true)
+    const res = await updateProduct(editingProduct.id, editingProduct)
+    setIsUpdating(false)
+
+    if (res.success) {
+      alert('✅ تم تعديل الصنف بنجاح')
+      setIsEditModalOpen(false)
+      setEditingProduct(null)
+      refreshProducts()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
 
   return (
-    <div className="space-y-6 relative pb-20" dir="rtl">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 rounded shadow-sm border-r-4 border-r-green-600">
-        <div>
-            <h1 className="text-xl md:text-2xl font-bold text-gray-800">إدارة الأصناف</h1>
-            <p className="text-xs text-green-600 font-bold mt-1">العدد المصفى: {filteredProducts.length}</p>
-        </div>
-        
-        <div className="flex flex-wrap gap-2 w-full md:w-auto">
-            <div className="w-full md:w-64">
-                <input 
-                    type="text" 
-                    placeholder="🔍 بحث برقم الموديل أو اللون..." 
-                    className="w-full p-2 border-2 border-green-200 rounded-lg focus:border-blue-500 outline-none text-sm"
-                    value={searchTerm}
-                    onChange={(e) => setSearchTerm(e.target.value)}
-                />
-            </div>
+    <div className="min-h-screen bg-gray-50 p-4 font-sans text-gray-800 pb-36" dir="rtl">
+      
+      {/* 1. Header العلوي مع أزرار الأوبشنات */}
+      <div className="bg-white p-4 shadow-sm mb-4 rounded-xl border border-gray-200">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-3 mb-4">
+          <div>
+            <h1 className="text-xl md:text-2xl font-black text-gray-800 flex items-center gap-2">
+              <span>📦</span>
+              <span>إدارة المخزون والأصناف</span>
+            </h1>
+            <p className="text-xs text-gray-500 mt-1">
+              إضافة الأصناف، استيراد الإكسيل، تعديل المخزون، مزامنة جوجل شيت، والتحديد السريع بـ Shift
+            </p>
+          </div>
 
-            {selectedIds.length > 0 && (
-                <button 
-                    onClick={handleDeleteSelected} 
-                    disabled={isDeleting}
-                    className={`flex-1 md:flex-none text-white px-4 py-2 rounded text-sm font-bold shadow transition-all ${isDeleting ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600 animate-pulse'}`}>
-                    {isDeleting ? '⏳...' : `حذف (${selectedIds.length})`}
-                </button>
-            )}
-            <button 
-                onClick={handleDeleteAll} 
-                disabled={isDeleting}
-                className={`flex-1 md:flex-none text-white px-4 py-2 rounded text-sm font-bold shadow transition-all ${isDeleting ? 'bg-gray-400 cursor-not-allowed' : 'bg-red-800 hover:bg-red-900'}`}>
-                {isDeleting ? '⏳...' : '⚠️ حذف الكل'}
+          {/* أزرار فتح النوافذ والعمليات */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => setShowAddForm(!showAddForm)}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-2 rounded-lg text-xs font-bold transition shadow"
+            >
+              {showAddForm ? '✕ إغلاق النموذج' : '➕ إضافة صنف جديد'}
             </button>
-        </div>
-      </div>
 
-      {/* Sync Section */}
-      <AdminSyncControl onRefresh={refreshProducts} />
+            <button
+              onClick={() => setShowExcelSection(!showExcelSection)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-3.5 py-2 rounded-lg text-xs font-bold transition shadow"
+            >
+              {showExcelSection ? '✕ إخفاء الإكسيل' : '📥 استيراد / تعديل بالإكسيل'}
+            </button>
 
-      {/* قسم تعديل الكميات الأولية الجديد بالكامل */}
-      <div className="bg-amber-50 p-4 rounded-xl border-2 border-amber-300 shadow-sm">
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-2">
-            <div>
-                <h3 className="font-black text-amber-900 text-base md:text-lg flex items-center gap-2">
-                  <span>📊</span>
-                  <span>تعديل كميات الأصناف الأولية (من ملف Excel)</span>
-                </h3>
-                <p className="text-xs text-amber-700 mt-1">
-                  ارفع ملفاً يحتوي على أعمدة: <b>(الموديل، اللون، المخزون)</b> ليتم ضبط الكمية الأولية للأصناف وتحديث رصيدها فوراً.
-                </p>
-            </div>
-            
-            <div className="flex items-center gap-3 w-full md:w-auto">
-                <button 
-                  onClick={downloadStockTemplate} 
-                  type="button"
-                  className="text-xs bg-white text-amber-900 border border-amber-300 hover:bg-amber-100 font-bold px-3 py-2 rounded-lg transition shadow-sm"
-                >
-                  📥 تحميل نموذج تعديل المخزون
-                </button>
-                <label className="text-xs bg-amber-600 hover:bg-amber-700 text-white font-bold px-4 py-2 rounded-lg cursor-pointer transition shadow-md flex items-center gap-2">
-                  <span>📄</span>
-                  <span>{isUpdatingStock ? 'جاري التعديل...' : 'رفع ملف تعديل الكميات'}</span>
-                  <input 
-                    type="file" 
-                    accept=".xlsx, .xls" 
-                    onChange={handleStockAdjustmentUpload} 
-                    disabled={isUpdatingStock || isDeleting} 
-                    className="hidden" 
-                  />
-                </label>
-            </div>
+            <button
+              onClick={() => setShowSyncSection(!showSyncSection)}
+              className="bg-purple-600 hover:bg-purple-700 text-white px-3.5 py-2 rounded-lg text-xs font-bold transition shadow"
+            >
+              {showSyncSection ? '✕ إخفاء المزامنة' : '🔄 مزامنة جوجل شيت'}
+            </button>
+
+            <Link
+              href="/admin"
+              className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3.5 py-2 rounded-lg text-xs font-bold transition border border-gray-200"
+            >
+              ← لوحة التحكم
+            </Link>
           </div>
+        </div>
 
-          {(isUpdatingStock || stockProgress > 0) && (
-             <div className="w-full bg-white p-3 rounded-lg shadow-sm border border-amber-200 mt-3">
-                <div className="flex justify-between text-xs font-bold text-amber-900 mb-1">
-                    <span>{stockStatusText}</span>
-                    <span>{stockProgress}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
-                    <div className="bg-amber-600 h-2.5 rounded-full transition-all duration-300 ease-in-out" style={{ width: `${stockProgress}%` }}></div>
-                </div>
-             </div>
-          )}
-      </div>
+        {/* 2. قسم الإكسيل الموسع (استيراد أصناف جديدة + تعديل كميات المخزون الأولي) */}
+        {showExcelSection && (
+          <div className="bg-emerald-50 border-2 border-emerald-200 p-4 rounded-xl mb-4 space-y-4 animate-in fade-in duration-200">
+            <h3 className="font-bold text-emerald-900 text-sm border-b border-emerald-200 pb-2">
+              📥 استيراد وتحديث البيانات عبر ملفات Excel
+            </h3>
 
-      {/* Upload Section - إضافة واستيراد أصناف جديدة */}
-      <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
-          <div className="flex flex-col md:flex-row justify-between items-center gap-4 mb-2">
-            <div className="w-full">
-                <h3 className="font-bold text-blue-800 text-sm md:text-lg">📥 استيراد أصناف جديدة (Excel)</h3>
-                <div className="flex justify-between items-center mt-1">
-                    <button onClick={downloadTemplate} className="text-xs text-blue-700 underline font-bold">تحميل النموذج الكامل</button>
-                    <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} disabled={isUploading || isDeleting} className="text-xs bg-white p-2 rounded border cursor-pointer w-1/2" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              
+              {/* أ. رفع أصناف جديدة بالكامل */}
+              <div className="bg-white p-3.5 rounded-xl border border-emerald-300 shadow-sm space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="font-bold text-xs text-gray-800">1. استيراد أصناف جديدة (كاملة البيانات)</span>
+                  <button
+                    onClick={downloadProductTemplate}
+                    className="text-[11px] text-emerald-700 underline font-bold"
+                  >
+                    📄 تحميل النموذج
+                  </button>
                 </div>
+                <input
+                  type="file"
+                  accept=".xlsx, .xls"
+                  onChange={handleUploadProductsExcel}
+                  disabled={isUploading}
+                  className="w-full text-xs p-1.5 border rounded bg-gray-50 cursor-pointer"
+                />
+                <span className="text-[10px] text-gray-500 block">الأعمدة: modelNo, color, vendor, price, cost, stockQty, discount</span>
+              </div>
+
+              {/* ب. تعديل وتحديث المخزون الأولي للأصناف الموجودة */}
+              <div className="bg-white p-3.5 rounded-xl border border-emerald-300 shadow-sm space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="font-bold text-xs text-gray-800">2. تعديل وتحديث المخزون الأولي فقط</span>
+                  <button
+                    onClick={downloadStockTemplate}
+                    className="text-[11px] text-blue-700 underline font-bold"
+                  >
+                    📄 تحميل نموذج الكميات
+                  </button>
+                </div>
+                <input
+                  type="file"
+                  accept=".xlsx, .xls"
+                  onChange={handleUploadInitialStockExcel}
+                  disabled={isUploading}
+                  className="w-full text-xs p-1.5 border rounded bg-gray-50 cursor-pointer"
+                />
+                <span className="text-[10px] text-gray-500 block">الأعمدة: modelNo, color, stockQty (يعيد ضبط الرصيد المتاح تلقائياً)</span>
+              </div>
+
             </div>
+
+            {isUploading && (
+              <div className="p-2 bg-emerald-100 rounded text-xs text-emerald-900 font-bold animate-pulse text-center">
+                ⏳ {uploadProgressText || 'جاري معالجة ورفع الملف...'}
+              </div>
+            )}
           </div>
-
-          {(isUploading || uploadProgress > 0) && (
-             <div className="w-full bg-white p-2 rounded shadow-sm border border-blue-100 mt-2">
-                <div className="flex justify-between text-[10px] font-bold text-blue-800 mb-1">
-                    <span>{uploadStatusText}</span>
-                    <span>{uploadProgress}%</span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
-                    <div className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-in-out" style={{ width: `${uploadProgress}%` }}></div>
-                </div>
-             </div>
-          )}
-      </div>
-
-      {/* Form Adding */}
-      <form onSubmit={handleSubmit} className="bg-white p-4 rounded-lg shadow space-y-4 border-t-4 border-green-600">
-        <h2 className="font-bold text-gray-700 text-sm border-b pb-2">إضافة صنف يدوياً</h2>
-        <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-            <div className="col-span-1"><label className="block text-xs font-bold text-gray-500 mb-1">الموديل</label><input type="text" className="w-full border p-2 rounded bg-gray-50 focus:bg-white" value={modelNo} onChange={e => setModelNo(e.target.value)} required /></div>
-            <div className="col-span-1"><label className="block text-xs font-bold text-gray-500 mb-1">المورد</label><input type="text" className="w-full border p-2 rounded bg-gray-50 focus:bg-white" value={vendor} onChange={e => setVendor(e.target.value)} /></div>
-            <div className="col-span-1"><label className="block text-xs font-bold text-gray-500 mb-1">التكلفة</label><input type="number" className="w-full border p-2 rounded bg-gray-50 focus:bg-white" value={cost} onChange={e => setCost(e.target.value)} /></div>
-            <div className="col-span-1"><label className="block text-xs font-bold text-gray-500 mb-1">السعر</label><input type="number" className="w-full border p-2 rounded font-bold focus:bg-white" value={price} onChange={e => setPrice(e.target.value)} required /></div>
-            <div className="col-span-1"><label className="block text-xs font-bold text-red-600 mb-1">خصم تلقائي %</label><input type="number" className="w-full border p-2 rounded font-bold focus:bg-red-50" value={discount} onChange={e => setDiscount(e.target.value)} /></div>
-            <div className="col-span-1"><label className="block text-xs font-bold text-gray-500 mb-1">الوصف</label><input type="text" className="w-full border p-2 rounded focus:bg-white" value={description} onChange={e => setDescription(e.target.value)} /></div>
-        </div>
-        
-        <div className="flex gap-4 items-center bg-gray-50 p-2 rounded">
-             <span className="text-xs font-bold text-gray-500">الحالة:</span>
-             <label className="flex items-center gap-1 cursor-pointer"><input type="radio" name="status" value="OPEN" checked={status === 'OPEN'} onChange={() => setStatus('OPEN')} /><span className="text-green-600 text-xs font-bold">مفتوح</span></label>
-             <label className="flex items-center gap-1 cursor-pointer"><input type="radio" name="status" value="CLOSED" checked={status === 'CLOSED'} onChange={() => setStatus('CLOSED')} /><span className="text-red-600 text-xs font-bold">مغلق</span></label>
-        </div>
-
-        <div className="bg-gray-50 p-3 rounded border">
-            <label className="block text-xs font-bold mb-2">الألوان والمخزون</label>
-            {colors.map((item, idx) => (
-                <div key={idx} className="flex gap-2 mb-2">
-                    <input type="text" placeholder="اللون" className="border p-2 rounded flex-1 text-sm" value={item.color} onChange={e => handleColorChange(idx, 'color', e.target.value)} required />
-                    <input type="number" placeholder="العدد" className="border p-2 rounded w-20 text-center text-sm" value={item.stock} onChange={e => handleColorChange(idx, 'stock', e.target.value)} required />
-                </div>
-            ))}
-            <button type="button" onClick={handleAddColorField} className="text-xs text-blue-600 font-bold mt-1">+ إضافة لون</button>
-        </div>
-        <button type="submit" disabled={isDeleting} className="bg-green-600 text-white px-6 py-3 rounded font-bold w-full hover:bg-green-700 disabled:opacity-50 transition">حفظ</button>
-      </form>
-
-      {/* --- Responsive List --- */}
-      <div className="relative">
-        {isDeleting && (
-            <div className="absolute inset-0 bg-white bg-opacity-80 z-20 flex justify-center items-center rounded-lg">
-                <div className="text-red-600 font-bold text-lg animate-pulse">⏳ جاري الحذف...</div>
-            </div>
         )}
 
-        {/* 1. Mobile View (Cards) */}
-        <div className="grid grid-cols-1 gap-4 md:hidden">
-            <div className="flex justify-between items-center px-2">
-                <span className="text-xs font-bold text-gray-500">العدد المصفى: {filteredProducts.length}</span>
-                <label className="flex items-center gap-2 text-xs font-bold bg-gray-100 px-3 py-1 rounded">
-                    <input type="checkbox" onChange={handleSelectAll} checked={filteredProducts.length > 0 && selectedIds.length === filteredProducts.length} />
-                    تحديد المعروض
-                </label>
-            </div>
-            {filteredProducts.map(p => (
-                <div key={p.id} className={`bg-white p-4 rounded-lg shadow border-l-4 ${selectedIds.includes(p.id) ? 'border-l-blue-500 bg-blue-50' : 'border-l-gray-300'}`}>
-                    <div className="flex justify-between items-start mb-2">
-                         <div className="flex items-center gap-3">
-                            <input type="checkbox" className="w-5 h-5" checked={selectedIds.includes(p.id)} onChange={() => handleSelectOne(p.id)} />
-                            <div>
-                                <div className="flex items-center gap-2">
-                                    <h3 className="font-bold text-gray-800 text-lg">{p.modelNo}</h3>
-                                    {p.discount > 0 && <span className="text-[10px] bg-red-100 text-red-600 px-1 rounded font-bold">خصم {p.discount}%</span>}
-                                    {p.status === 'CLOSED' && <span className="text-[10px] bg-red-100 text-red-600 px-1 rounded">مغلق</span>}
-                                </div>
-                                <span className="text-xs text-gray-500">{p.color}</span>
-                            </div>
-                         </div>
-                         <div className="text-left">
-                             <div className="font-bold text-blue-600 text-lg">{p.price} ج.م</div>
-                             <div className={`text-xs font-bold ${p.stockQty > 0 ? 'text-green-600' : 'text-red-500'}`}>
-                                أولي: {p.stockQty} | متاح: {p.currentStock}
-                             </div>
-                         </div>
-                    </div>
-                    <div className="flex justify-between items-center border-t pt-2 mt-2">
-                        <span className="text-xs text-gray-400">ID: {p.id.substring(0, 6)}</span>
-                        <div className="flex gap-2">
-                            <button onClick={() => handleEditClick(p)} className="bg-blue-100 text-blue-600 px-3 py-1 rounded text-xs font-bold">تعديل</button>
-                            <button onClick={() => handleDelete(p.id)} className="bg-red-100 text-red-600 px-3 py-1 rounded text-xs font-bold">حذف</button>
-                        </div>
-                    </div>
-                </div>
-            ))}
-        </div>
+        {/* 3. قسم مزامنة جوجل شيت */}
+        {showSyncSection && (
+          <div className="bg-purple-50 border-2 border-purple-200 p-4 rounded-xl mb-4 space-y-4 animate-in fade-in duration-200">
+            <h3 className="font-bold text-purple-900 text-sm border-b border-purple-200 pb-2">
+              🔄 سحب ومزامنة الحركات من Google Sheets
+            </h3>
 
-        {/* 2. Desktop View (Table) */}
-        <div className="hidden md:block bg-white rounded-lg shadow overflow-hidden">
-            <div className="p-2 bg-gray-50 border-b flex justify-between items-center text-xs text-gray-500">
-                <span>عدد الأصناف المصفاة: {filteredProducts.length}</span>
-                <span>المحدد: {selectedIds.length}</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="text-xs font-bold text-purple-950">سحب الحركات من تاريخ:</label>
+              <input
+                type="date"
+                value={syncStartDate}
+                onChange={(e) => setSyncStartDate(e.target.value)}
+                className="p-2 bg-white border border-purple-300 rounded text-xs font-bold outline-none"
+              />
+              <button
+                onClick={handleSyncSheets}
+                disabled={isSyncing}
+                className="bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white px-4 py-2 rounded text-xs font-bold shadow"
+              >
+                {isSyncing ? 'جاري السحب والمزامنة...' : '⚡ بدء المزامنة الآن'}
+              </button>
             </div>
-            <table className="w-full text-sm text-right">
-            <thead className="bg-gray-100 text-gray-700">
-                <tr>
-                <th className="p-3 w-10 text-center"><input type="checkbox" onChange={handleSelectAll} checked={filteredProducts.length > 0 && selectedIds.length === filteredProducts.length} /></th>
-                <th className="p-3">الموديل</th>
-                <th className="p-3">اللون</th>
-                <th className="p-3">المورد</th>
-                <th className="p-3">الحالة</th>
-                <th className="p-3 text-center">المخزون الأولي</th>
-                <th className="p-3 text-center">الرصيد المتاح</th>
-                <th className="p-3">التكلفة</th>
-                <th className="p-3">السعر</th>
-                <th className="p-3">خصم تلقائي</th>
-                <th className="p-3 text-center">تحكم</th>
-                </tr>
-            </thead>
-            <tbody>
-                {filteredProducts.map(p => (
-                <tr key={p.id} className={`border-b hover:bg-gray-50 ${selectedIds.includes(p.id) ? 'bg-blue-50' : ''}`}>
-                    <td className="p-3 text-center"><input type="checkbox" checked={selectedIds.includes(p.id)} onChange={() => handleSelectOne(p.id)} /></td>
-                    <td className="p-3 font-bold">{p.modelNo}</td>
-                    <td className="p-3">{p.color}</td>
-                    <td className="p-3">{p.vendor}</td>
-                    <td className="p-3">{p.status === 'CLOSED' ? <span className="bg-red-100 text-red-700 px-2 py-1 rounded text-xs">مغلق</span> : <span className="bg-green-100 text-green-700 px-2 py-1 rounded text-xs">مفتوح</span>}</td>
-                    <td className="p-3 text-center font-bold text-gray-700">{p.stockQty}</td>
-                    <td className={`p-3 text-center font-bold ${p.currentStock <= 0 ? 'text-red-500' : 'text-emerald-600'}`}>{p.currentStock}</td>
-                    <td className="p-3 font-mono">{p.cost}</td>
-                    <td className="p-3 font-mono">{p.price}</td>
-                    <td className="p-3 font-bold text-red-600">{p.discount}%</td>
-                    <td className="p-3 flex justify-center gap-2">
-                    <button onClick={() => handleEditClick(p)} className="text-blue-600 hover:text-blue-800 font-bold bg-blue-100 px-2 py-1 rounded text-xs">تعديل</button>
-                    <button onClick={() => handleDelete(p.id)} disabled={isDeleting} className="text-red-600 hover:text-red-800 font-bold bg-red-100 px-2 py-1 rounded text-xs disabled:opacity-50">حذف</button>
-                    </td>
-                </tr>
-                ))}
-            </tbody>
-            </table>
+
+            {syncOperations.length > 0 && (
+              <div className="bg-white p-3 rounded-lg border border-purple-200">
+                <span className="text-xs font-bold text-gray-700 block mb-2">آخر عمليات مزامنة:</span>
+                <div className="space-y-1 text-xs">
+                  {syncOperations.slice(0, 3).map((op) => (
+                    <div key={op.id} className="flex justify-between items-center bg-gray-50 p-2 rounded">
+                      <span>تاريخ: {new Date(op.createdAt).toLocaleDateString('ar-EG')} - تم سحب {op.itemsCount} حركة</span>
+                      <button
+                        onClick={() => handleRevertSync(op.id)}
+                        className="text-red-600 hover:underline font-bold text-[11px]"
+                      >
+                        تراجع ↩
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 4. فورم إضافة صنف جديد يدوياً */}
+        {showAddForm && (
+          <form onSubmit={handleSaveNewProduct} className="bg-blue-50 border-2 border-blue-200 p-4 rounded-xl mb-4 space-y-3 animate-in fade-in duration-200">
+            <h3 className="font-bold text-blue-900 text-sm border-b border-blue-200 pb-2">➕ إضافة صنف جديد</h3>
+            
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">الموديل *</label>
+                <input
+                  type="text"
+                  required
+                  value={newProduct.modelNo}
+                  onChange={(e) => setNewProduct({ ...newProduct, modelNo: e.target.value })}
+                  className="w-full bg-white border p-2 rounded text-xs font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">المورد</label>
+                <input
+                  type="text"
+                  value={newProduct.vendor}
+                  onChange={(e) => setNewProduct({ ...newProduct, vendor: e.target.value })}
+                  className="w-full bg-white border p-2 rounded text-xs"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">السعر (قطعة) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  required
+                  value={newProduct.price}
+                  onChange={(e) => setNewProduct({ ...newProduct, price: e.target.value })}
+                  className="w-full bg-white border p-2 rounded text-xs font-mono font-bold"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-700 mb-1">التكلفة</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newProduct.cost}
+                  onChange={(e) => setNewProduct({ ...newProduct, cost: e.target.value })}
+                  className="w-full bg-white border p-2 rounded text-xs font-mono"
+                />
+              </div>
+            </div>
+
+            {/* الألوان والكميات */}
+            <div className="bg-white p-3 rounded-lg border border-blue-200 space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-bold text-gray-700">الألوان والمخزون الأولي:</span>
+                <button
+                  type="button"
+                  onClick={handleAddColorRow}
+                  className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded font-bold hover:bg-blue-200"
+                >
+                  + لون آخر
+                </button>
+              </div>
+
+              {newProduct.colors.map((c, idx) => (
+                <div key={idx} className="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="اسم اللون"
+                    value={c.color}
+                    onChange={(e) => {
+                      const copy = [...newProduct.colors]
+                      copy[idx].color = e.target.value
+                      setNewProduct({ ...newProduct, colors: copy })
+                    }}
+                    className="flex-1 border p-1.5 rounded text-xs"
+                  />
+                  <input
+                    type="number"
+                    placeholder="الرصيد الأولي"
+                    value={c.stock}
+                    onChange={(e) => {
+                      const copy = [...newProduct.colors]
+                      copy[idx].stock = e.target.value
+                      setNewProduct({ ...newProduct, colors: copy })
+                    }}
+                    className="w-28 border p-1.5 rounded text-xs font-mono text-center"
+                  />
+                  {newProduct.colors.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveColorRow(idx)}
+                      className="text-red-500 font-bold px-1"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowAddForm(false)}
+                className="bg-gray-200 px-4 py-2 rounded text-xs font-bold"
+              >
+                إلغاء
+              </button>
+              <button
+                type="submit"
+                className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded text-xs font-bold shadow"
+              >
+                حفظ الصنف والألوان ✅
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* 5. شريط البحث والفلترة المباشرة */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-3 border-t border-gray-100">
+          <div className="md:col-span-2">
+            <input
+              type="text"
+              placeholder="🔍 بحث سريع بالموديل أو اللون أو المورد..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full bg-gray-50 border border-gray-300 rounded-lg p-2.5 text-xs font-bold text-gray-800 focus:bg-white focus:border-blue-500 outline-none"
+            />
+          </div>
+
+          <div>
+            <select
+              value={vendorFilter}
+              onChange={(e) => setVendorFilter(e.target.value)}
+              className="w-full bg-gray-50 border border-gray-300 rounded-lg p-2.5 text-xs font-bold text-gray-700 outline-none"
+            >
+              <option value="ALL">جميع الموردين ({availableVendors.length})</option>
+              {availableVendors.map(v => (
+                <option key={v} value={v}>{v}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <select
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              className="w-full bg-gray-50 border border-gray-300 rounded-lg p-2.5 text-xs font-bold text-gray-700 outline-none"
+            >
+              <option value="ALL">جميع الحالات</option>
+              <option value="OPEN">مفتوح</option>
+              <option value="CLOSED">مغلق</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      {/* Edit Modal */}
+      {/* 6. الشريط العلوي للجدول (العدد، المحدد، أزرار التصفير والحذف) */}
+      <div className="bg-white px-4 py-3 rounded-t-xl border border-b-0 border-gray-200 flex flex-wrap justify-between items-center gap-3">
+        
+        <div className="text-xs font-bold text-gray-600">
+          عدد الأصناف المصفاة: <span className="font-mono text-blue-700 text-sm font-black">{filteredProducts.length}</span>
+        </div>
+
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-bold text-gray-700">
+            المحدد: <span className="font-mono text-purple-700 font-bold">({selectedIds.length})</span>
+          </span>
+
+          {selectedIds.length > 0 && (
+            <>
+              {/* ✅ زر تصفير الرصيد الأولي الجديد */}
+              <button
+                type="button"
+                onClick={handleResetInitialStock}
+                disabled={isResettingInitial}
+                className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow transition flex items-center gap-1"
+                title="تصفير الرصيد الأولي فقط مع الإبقاء على الرصيد المتاح"
+              >
+                <span>⚡</span>
+                <span>{isResettingInitial ? 'جاري التصفير...' : `تصفير الرصيد الأولي (${selectedIds.length})`}</span>
+              </button>
+
+              {/* زر حذف المحدد */}
+              <button
+                type="button"
+                onClick={handleDeleteSelected}
+                disabled={isDeleting}
+                className="bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow transition flex items-center gap-1"
+              >
+                <span>🗑️</span>
+                <span>{isDeleting ? 'جاري الحذف...' : `حذف المحدد (${selectedIds.length})`}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { setSelectedIds([]); setLastSelectedIndex(null); }}
+                className="text-gray-500 hover:text-gray-700 text-xs font-bold underline px-1"
+              >
+                إلغاء التحديد
+              </button>
+            </>
+          )}
+
+          <button
+            type="button"
+            onClick={handleDeleteAll}
+            disabled={isDeleting}
+            className="text-red-700 hover:bg-red-50 border border-red-200 px-3 py-1.5 rounded-lg text-xs font-bold transition mr-2"
+          >
+            ⚠️ حذف الكل (غير المرتبط)
+          </button>
+        </div>
+      </div>
+
+      {/* 7. جدول الأصناف المطابق للصورة 100% مع ميزة Shift + Click */}
+      <div className="bg-white rounded-b-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <table className="w-full text-right text-sm">
+          <thead className="bg-gray-50 text-gray-700 border-b border-gray-200 text-xs font-bold">
+            <tr>
+              <th className="p-3 w-10 text-center">
+                <input
+                  type="checkbox"
+                  checked={isAllSelected}
+                  onChange={handleSelectAll}
+                  className="w-4 h-4 cursor-pointer accent-blue-600 rounded"
+                />
+              </th>
+              <th className="p-3 w-32 font-bold">الموديل</th>
+              <th className="p-3 w-28 font-bold">اللون</th>
+              <th className="p-3 font-bold">المورد</th>
+              <th className="p-3 text-center w-24 font-bold">الحالة</th>
+              <th className="p-3 text-center w-32 font-bold">المخزون الأولي</th>
+              <th className="p-3 text-center w-32 font-bold">الرصيد المتاح</th>
+              <th className="p-3 text-center w-28 font-bold">التكلفة</th>
+              <th className="p-3 text-center w-28 font-bold">السعر</th>
+              <th className="p-3 text-center w-24 font-bold">خصم تلقائي</th>
+              <th className="p-3 text-center w-36 font-bold">تحكم</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {loading ? (
+              <tr>
+                <td colSpan={11} className="p-12 text-center text-gray-400 font-bold">
+                  جاري تحميل الأصناف...
+                </td>
+              </tr>
+            ) : filteredProducts.length === 0 ? (
+              <tr>
+                <td colSpan={11} className="p-12 text-center text-gray-400 font-bold">
+                  لا توجد أصناف مطابقة للبحث
+                </td>
+              </tr>
+            ) : (
+              filteredProducts.map((product, index) => {
+                const isChecked = selectedIds.includes(product.id)
+
+                return (
+                  <tr
+                    key={product.id}
+                    className={`hover:bg-gray-50 transition ${
+                      isChecked ? 'bg-blue-50/60' : ''
+                    }`}
+                  >
+                    {/* Checkbox مع دعم Shift + Click */}
+                    <td className="p-3 text-center">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onClick={(e) => handleCheckboxClick(e, product.id, index)}
+                        onChange={() => {}}
+                        className="w-4 h-4 cursor-pointer accent-blue-600 rounded"
+                      />
+                    </td>
+
+                    <td className="p-3 font-bold text-gray-900 font-mono text-base">
+                      {product.modelNo}
+                    </td>
+
+                    <td className="p-3 text-gray-700 text-xs">
+                      {product.color}
+                    </td>
+
+                    <td className="p-3 text-gray-600 text-xs">
+                      {product.vendor || '-'}
+                    </td>
+
+                    <td className="p-3 text-center">
+                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                        product.status === 'OPEN'
+                          ? 'bg-green-100 text-green-700 border border-green-200'
+                          : 'bg-red-100 text-red-700 border border-red-200'
+                      }`}>
+                        {product.status === 'OPEN' ? 'مفتوح' : 'مغلق'}
+                      </span>
+                    </td>
+
+                    {/* المخزون الأولي */}
+                    <td className="p-3 text-center font-mono font-bold text-gray-800 text-sm">
+                      {product.stockQty}
+                    </td>
+
+                    {/* الرصيد المتاح (أخضر وواضح) */}
+                    <td className="p-3 text-center font-mono font-black text-emerald-600 text-base">
+                      {product.currentStock}
+                    </td>
+
+                    <td className="p-3 text-center font-mono text-xs text-gray-800">
+                      {product.cost}
+                    </td>
+
+                    <td className="p-3 text-center font-mono font-bold text-gray-900 text-sm">
+                      {product.price}
+                    </td>
+
+                    <td className="p-3 text-center font-mono font-bold text-red-600 text-xs">
+                      {product.discount || 0}%
+                    </td>
+
+                    {/* أزرار التحكم: تعديل وحذف */}
+                    <td className="p-3 text-center">
+                      <div className="flex justify-center items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleEditClick(product)}
+                          className="bg-blue-100 hover:bg-blue-200 text-blue-700 px-3 py-1 rounded text-xs font-bold transition shadow-sm"
+                        >
+                          تعديل
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteOne(product.id, product.modelNo)}
+                          className="bg-red-100 hover:bg-red-200 text-red-600 px-3 py-1 rounded text-xs font-bold transition shadow-sm"
+                        >
+                          حذف
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 8. مودال تعديل بيانات الصنف */}
       {isEditModalOpen && editingProduct && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
-              <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6 space-y-4">
-                  <h3 className="font-bold border-b pb-2 text-lg">تعديل بيانات الصنف</h3>
-                  <div className="grid grid-cols-2 gap-3">
-                      <div><label className="text-xs text-gray-500">الموديل</label><input type="text" className="w-full border p-2 rounded bg-gray-100" value={editingProduct.modelNo} readOnly /></div>
-                      <div><label className="text-xs text-gray-500">اللون</label><input type="text" className="w-full border p-2 rounded bg-gray-100" value={editingProduct.color} readOnly /></div>
-                  </div>
-                  <div><label className="text-xs text-gray-500">الوصف</label><input type="text" className="w-full border p-2 rounded" value={editingProduct.description || ''} onChange={(e) => setEditingProduct({...editingProduct, description: e.target.value})} /></div>
-                  <div><label className="text-xs text-gray-500">المورد</label><input type="text" className="w-full border p-2 rounded" value={editingProduct.vendor || ''} onChange={(e) => setEditingProduct({...editingProduct, vendor: e.target.value})} /></div>
-                  <div className="grid grid-cols-4 gap-3">
-                      <div><label className="text-xs text-gray-500">الكمية</label><input type="number" className="w-full border p-2 rounded font-bold" value={editingProduct.stockQty} onChange={(e) => setEditingProduct({...editingProduct, stockQty: e.target.value})} /></div>
-                      <div><label className="text-xs text-gray-500">التكلفة</label><input type="number" className="w-full border p-2 rounded font-bold" value={editingProduct.cost} onChange={(e) => setEditingProduct({...editingProduct, cost: e.target.value})} /></div>
-                      <div><label className="text-xs text-gray-500">السعر</label><input type="number" className="w-full border p-2 rounded font-bold" value={editingProduct.price} onChange={(e) => setEditingProduct({...editingProduct, price: e.target.value})} /></div>
-                      <div><label className="text-xs text-red-600">الخصم %</label><input type="number" className="w-full border p-2 rounded font-bold bg-red-50" value={editingProduct.discount} onChange={(e) => setEditingProduct({...editingProduct, discount: e.target.value})} /></div>
-                  </div>
-                  <div>
-                    <label className="text-xs text-gray-500">الحالة</label>
-                    <select className="w-full border p-2 rounded bg-white" value={editingProduct.status} onChange={(e) => setEditingProduct({...editingProduct, status: e.target.value})}>
-                        <option value="OPEN">مفتوح</option>
-                        <option value="CLOSED">مغلق</option>
-                    </select>
-                  </div>
-                  <div className="flex justify-end gap-2 pt-2">
-                      <button onClick={() => setIsEditModalOpen(false)} className="px-4 py-2 bg-gray-200 rounded font-bold">إلغاء</button>
-                      <button onClick={handleEditSave} className="px-4 py-2 text-white bg-blue-600 rounded font-bold">حفظ</button>
-                  </div>
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+          <div className="bg-white w-full max-w-lg rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b pb-2">
+              <h3 className="font-bold text-base text-gray-800">
+                تعديل الصنف: {editingProduct.modelNo} ({editingProduct.color})
+              </h3>
+              <button
+                onClick={() => setIsEditModalOpen(false)}
+                className="text-gray-400 hover:text-red-500 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">الموديل</label>
+                  <input
+                    type="text"
+                    required
+                    value={editingProduct.modelNo}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, modelNo: e.target.value })}
+                    className="w-full border p-2 rounded text-xs font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">اللون</label>
+                  <input
+                    type="text"
+                    required
+                    value={editingProduct.color}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, color: e.target.value })}
+                    className="w-full border p-2 rounded text-xs font-bold"
+                  />
+                </div>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">المورد</label>
+                  <input
+                    type="text"
+                    value={editingProduct.vendor || ''}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, vendor: e.target.value })}
+                    className="w-full border p-2 rounded text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">الحالة</label>
+                  <select
+                    value={editingProduct.status}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, status: e.target.value })}
+                    className="w-full border p-2 rounded text-xs font-bold"
+                  >
+                    <option value="OPEN">مفتوح</option>
+                    <option value="CLOSED">مغلق</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">السعر</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    required
+                    value={editingProduct.price}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, price: parseFloat(e.target.value) || 0 })}
+                    className="w-full border p-2 rounded text-xs font-mono font-bold"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">التكلفة</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editingProduct.cost || 0}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, cost: parseFloat(e.target.value) || 0 })}
+                    className="w-full border p-2 rounded text-xs font-mono"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">خصم تلقائي %</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={editingProduct.discount || 0}
+                    onChange={(e) => setEditingProduct({ ...editingProduct, discount: parseFloat(e.target.value) || 0 })}
+                    className="w-full border p-2 rounded text-xs font-mono text-red-600 font-bold"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">المخزون الأولي</label>
+                <input
+                  type="number"
+                  value={editingProduct.stockQty}
+                  onChange={(e) => setEditingProduct({ ...editingProduct, stockQty: parseInt(e.target.value) || 0 })}
+                  className="w-full border p-2 rounded text-xs font-mono font-bold"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t">
+                <button
+                  type="button"
+                  onClick={() => setIsEditModalOpen(false)}
+                  className="flex-1 bg-gray-100 py-2 rounded text-xs font-bold hover:bg-gray-200"
+                >
+                  إلغاء
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isUpdating}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2 rounded text-xs font-bold shadow transition"
+                >
+                  {isUpdating ? 'جاري الحفظ...' : 'حفظ التعديل ✅'}
+                </button>
+              </div>
+            </form>
           </div>
+        </div>
       )}
+
     </div>
-  );
+  )
 }
