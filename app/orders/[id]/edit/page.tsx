@@ -1,8 +1,9 @@
 'use client'
 import { useState, useEffect, useRef, use } from 'react';
 import { getOrderById, searchProducts, updateOrder, getSafes, searchCustomers } from '@/app/actions';
-import { addCustomer } from '@/app/admin-actions';
+import { addCustomer, updateOrderDate } from '@/app/admin-actions';
 import { useRouter } from 'next/navigation';
+import { useSession } from 'next-auth/react';
 import { Scanner } from '@yudiel/react-qr-scanner';
 
 interface Safe {
@@ -13,12 +14,21 @@ interface Safe {
 export default function EditOrderPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router = useRouter();
+  const { data: session } = useSession();
+
+  // فحص صلاحية الأدمن أو صاحب العمل أو المحاسب
+  const userRole = session?.user?.role || 'EMPLOYEE';
+  const canEditDate = ['ADMIN', 'OWNER', 'ACCOUNTANT'].includes(userRole);
   
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [safes, setSafes] = useState<Safe[]>([]);
   const [order, setOrder] = useState<any>(null);
+
+  // حالات التاريخ الجديد والأصلي
+  const [orderDate, setOrderDate] = useState<string>('');
+  const [originalOrderDate, setOriginalOrderDate] = useState<string>('');
   
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
@@ -71,6 +81,17 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
             setCustomerSearchTerm(res.customer.name);
             setDeposit(res.deposit.toString());
             handleDepositChange(res.deposit.toString());
+
+            // ضبط تاريخ الأوردر بتنسيق YYYY-MM-DD
+            if (res.createdAt) {
+              const d = new Date(res.createdAt);
+              const year = d.getFullYear();
+              const month = String(d.getMonth() + 1).padStart(2, '0');
+              const day = String(d.getDate()).padStart(2, '0');
+              const localDateStr = `${year}-${month}-${day}`;
+              setOrderDate(localDateStr);
+              setOriginalOrderDate(localDateStr);
+            }
 
             if (res.depositSplits && res.depositSplits.length > 0) {
               setDepositSplits(res.depositSplits);
@@ -136,7 +157,7 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
     }, 300);
 
     return () => clearTimeout(delayDebounceFn);
-}, [customerSearchTerm, selectedCustomer]);
+  }, [customerSearchTerm, selectedCustomer]);
 
   useEffect(() => {
     const delayDebounceFn = setTimeout(async () => {
@@ -331,7 +352,15 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
     });
     
     if (result.success) {
-        alert("تم تحديث الأوردر والعميل بنجاح ✅");
+        // تحديث التاريخ إن كان المستخدم أدمن وقام بتغيير التاريخ
+        if (canEditDate && orderDate && orderDate !== originalOrderDate) {
+          const dateRes = await updateOrderDate(id, orderDate);
+          if (!dateRes.success) {
+            console.warn("تنبيه تحديث التاريخ:", dateRes.error);
+          }
+        }
+
+        alert("تم تحديث الأوردر بنجاح ✅");
         router.push('/orders/list');
     } else {
         alert(`فشل التحديث: ${result.error}`);
@@ -554,6 +583,32 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
             <div className="bg-slate-900 text-white p-5 rounded-2xl mb-6 shadow-md">
                <div className="flex justify-between text-lg mb-4 border-b border-slate-700 pb-2"><span>صافي الفاتورة:</span><span className="font-bold text-yellow-400 text-2xl">{currentTotal.toFixed(2)}</span></div>
                
+               {/* 📅 تعديل تاريخ الأوردر (متاح للإدارة/الأدمن فقط ومقفل للموظف) */}
+               <div className="mb-4">
+                  <div className="flex justify-between items-center mb-2">
+                    <label className="block text-slate-400 text-sm font-bold">📅 تاريخ الأوردر / الفاتورة:</label>
+                    {canEditDate ? (
+                      <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold">
+                        صلاحية أدمن ⚙️
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-500 font-bold">
+                        🔒 خاص بالإدارة فقط
+                      </span>
+                    )}
+                  </div>
+                  <input 
+                    type="date" 
+                    value={orderDate}
+                    disabled={!canEditDate}
+                    onChange={(e) => setOrderDate(e.target.value)}
+                    className="w-full p-3.5 rounded-xl bg-slate-800 text-white font-bold text-lg outline-none border border-slate-700 focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition" 
+                  />
+                  {!canEditDate && (
+                    <p className="text-[11px] text-slate-500 mt-1">تعديل تاريخ الأوردر مقتصر على المدير وصاحب العمل.</p>
+                  )}
+               </div>
+
                <div className="mb-4">
                   <label className="block text-slate-400 text-sm mb-2 font-bold">💵 العربون / المدفوع:</label>
                   <input 

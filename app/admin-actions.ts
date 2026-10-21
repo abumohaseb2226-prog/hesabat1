@@ -3,6 +3,8 @@
 import { PrismaClient } from '@prisma/client'
 import { revalidatePath } from 'next/cache'
 import bcrypt from 'bcryptjs'
+import { getServerSession } from 'next-auth'
+import { authOptions } from '@/auth'
 
 const prisma = new PrismaClient()
 
@@ -706,9 +708,9 @@ export async function getSafesWithBalances() {
     });
 
     const safesWithBalances = safes.map(s => {
-      let balance = 0;
-      let totalIn = 0;
-      let totalOut = 0;
+      let balance = 0
+      let totalIn = 0
+      let totalOut = 0
 
       s.payments.forEach(p => {
         if (p.type === 'IN' || p.type === 'PAYMENT_COLLECTION') {
@@ -852,4 +854,85 @@ export async function deletePayment(id: string) {
     } catch (error) {
         return { success: false, error: 'Failed to delete payment.' };
     }
+}
+
+// =========================================================================
+// 6. تعديل تاريخ الأوردر والحركات المالية المرتبطة به (خاص بالأدمن والإدارة)
+// =========================================================================
+
+export async function updateOrderDate(orderId: string, newDateStr: string) {
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session?.user?.image) {
+      return { success: false, error: 'يرجى تسجيل الدخول أولاً' }
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: session.user.image as string }
+    })
+
+    if (!user || !['ADMIN', 'OWNER', 'ACCOUNTANT'].includes(user.role)) {
+      return { success: false, error: 'صلاحية تعديل تاريخ الأوردر قاصرة على الإدارة فقط' }
+    }
+
+    if (!newDateStr) {
+      return { success: false, error: 'التاريخ مطلوب' }
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, orderNo: true, createdAt: true }
+    })
+
+    if (!order) {
+      return { success: false, error: 'الأوردر غير موجود' }
+    }
+
+    const [year, month, day] = newDateStr.split('-').map(Number)
+    if (isNaN(year) || isNaN(month) || isNaN(day)) {
+      return { success: false, error: 'تنسيق التاريخ غير صحيح' }
+    }
+
+    // الحفاظ على وقت الأوردر الأصلي (الساعة والدقائق) وتغيير اليوم والشهر والسنة فقط
+    const targetDate = new Date(order.createdAt)
+    targetDate.setFullYear(year, month - 1, day)
+
+    await prisma.$transaction(async (tx) => {
+      // 1. تحديث تاريخ الأوردر الأساسي
+      await tx.order.update({
+        where: { id: orderId },
+        data: { createdAt: targetDate }
+      })
+
+      // 2. تحديث سجلات تسليم الأصناف المرتبطة
+      await tx.fulfillmentLog.updateMany({
+        where: { orderItem: { orderId: orderId } },
+        data: { createdAt: targetDate }
+      })
+
+      // 3. تحديث تاريخ دفعات الخزينة والعربون المرتبطة بهذا الأوردر لضمان دقة التقارير
+      await tx.payment.updateMany({
+        where: {
+          OR: [
+            { description: { contains: `#${order.orderNo}` } },
+            { description: { contains: ` ${order.orderNo}` } }
+          ]
+        },
+        data: { createdAt: targetDate }
+      })
+    })
+
+    revalidatePath('/')
+    revalidatePath('/orders/list')
+    revalidatePath(`/orders/${orderId}/edit`)
+    revalidatePath(`/orders/${orderId}/print`)
+    revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/reports')
+    revalidatePath('/today-summary')
+
+    return { success: true, message: 'تم تحديث تاريخ الأوردر وسجلاته المالية بنجاح' }
+  } catch (error: any) {
+    console.error('Error updating order date:', error)
+    return { success: false, error: error.message || 'فشل تحديث تاريخ الأوردر' }
+  }
 }

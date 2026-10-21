@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import Link from "next/link";
 import { authOptions } from "@/auth";
 import NotificationBell from "./admin/NotificationBell";
+import LogoutButton from "@/components/LogoutButton";
 import { prisma } from '@/lib/prisma';
 
 async function TodaySummaryButton() {
@@ -56,7 +57,7 @@ export default async function Home() {
   });
   
   if (!user) {
-     redirect("/api/auth/signout");
+     redirect("/login");
   }
 
   const isAllowedInAdmin = user?.role === 'ADMIN' || user?.role === 'OWNER' || user?.role === 'ACCOUNTANT';
@@ -141,12 +142,8 @@ export default async function Home() {
                 </Link>
               )}
               
-              <Link 
-                href="/api/auth/signout" 
-                className="bg-red-500/20 text-red-300 text-sm font-bold border border-red-500/30 px-4 py-2 rounded-xl hover:bg-red-500/30 transition-colors flex items-center"
-              >
-                خروج
-              </Link>
+              {/* زر الخروج الآمن المباشر للوجن */}
+              <LogoutButton />
             </div>
           </div>
         </header>
@@ -157,10 +154,9 @@ export default async function Home() {
             <TodaySummaryButton />
           )}
 
-          {/* الكروت الرئيسية للطلب (أوردر عادي + فاتورة بازار سريعة) */}
+          {/* الكروت الرئيسية للطلب */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             
-            {/* Primary Action 1 - New Order العادي */}
             <div className="scale-in" style={{ animationDelay: '0.1s' }}>
               <Link 
                 href="/orders/new" 
@@ -185,7 +181,6 @@ export default async function Home() {
               </Link>
             </div>
 
-            {/* Primary Action 2 - فاتورة البازار (ظاهرة للجميع) */}
             <div className="scale-in" style={{ animationDelay: '0.15s' }}>
               <Link 
                 href="/orders/bazaar" 
@@ -217,10 +212,9 @@ export default async function Home() {
 
           </div>
 
-          {/* Quick Actions Grid - أيقونات الخدمات السريعة (متاح فيها جرد المخزن للجميع) */}
+          {/* Quick Actions Grid */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             
-            {/* Orders List */}
             <div className="scale-in" style={{ animationDelay: '0.2s' }}>
               <Link 
                 href="/orders/list" 
@@ -238,7 +232,6 @@ export default async function Home() {
               </Link>
             </div>
 
-            {/* أيقونة جرد المخزن السريع (متاحة للجميع: موظف، محاسب، أدمن) */}
             <div className="scale-in" style={{ animationDelay: '0.22s' }}>
               <Link 
                 href="/inventory/audit" 
@@ -256,7 +249,6 @@ export default async function Home() {
               </Link>
             </div>
 
-            {/* فاتورة مشتريات */}
             {isAllowedInAdmin && (
               <div className="scale-in" style={{ animationDelay: '0.25s' }}>
                 <Link 
@@ -276,7 +268,6 @@ export default async function Home() {
               </div>
             )}
 
-            {/* Cash Management */}
             {user?.role !== 'EMPLOYEE' && (
               <div className="scale-in" style={{ animationDelay: '0.3s' }}>
                 <Link 
@@ -296,7 +287,6 @@ export default async function Home() {
               </div>
             )}
 
-            {/* Returns */}
             {isAllowedInAdmin && (
               <div className="scale-in" style={{ animationDelay: '0.4s' }}>
                 <Link 
@@ -316,7 +306,6 @@ export default async function Home() {
               </div>
             )}
 
-            {/* Admin Panel - Only for Admin & Owner */}
             {isPowerUser && (
               <div className="scale-in" style={{ animationDelay: '0.5s' }}>
                 <Link 
@@ -341,7 +330,6 @@ export default async function Home() {
             )}
           </div>
 
-          {/* Footer */}
           <div className="text-center text-gray-500 text-xs font-mono pt-8">
             نظام إدارة المبيعات v2.0 • modoo
           </div>

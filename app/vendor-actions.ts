@@ -691,3 +691,154 @@ export async function recordVendorInvoice(data: {
     return { success: false, error: error.message }
   }
 }
+
+// =========================================================================
+// 12. تقرير أداء الموردين (ترتيب الأكثر مبيعاً مع تحليل أصناف كل مورد)
+// =========================================================================
+export async function getVendorsPerformanceReport(startDateStr?: string, endDateStr?: string) {
+  try {
+    const dateFilter: any = {}
+    if (startDateStr) dateFilter.gte = new Date(startDateStr + 'T00:00:00')
+    if (endDateStr) dateFilter.lte = new Date(endDateStr + 'T23:59:59.999')
+
+    // 1. جلب الموردين المسجلين
+    const vendors = await prisma.vendor.findMany({
+      select: { id: true, name: true, code: true, phone: true }
+    })
+
+    // 2. جلب بنود الأوردرات والمرتجعات مع المنتجات
+    const orderItems = await prisma.orderItem.findMany({
+      where: Object.keys(dateFilter).length > 0 ? {
+        order: { createdAt: dateFilter }
+      } : undefined,
+      select: {
+        quantity: true,
+        price: true,
+        product: {
+          select: {
+            id: true,
+            modelNo: true,
+            color: true,
+            description: true,
+            vendor: true,
+            vendorId: true,
+            currentStock: true,
+            cost: true,
+            price: true
+          }
+        },
+        returnItems: {
+          select: { quantity: true, refundAmount: true }
+        }
+      }
+    })
+
+    // خرائط لربط المبيعات بالموردين (بالـ ID أو بالاسم)
+    const vendorById = new Map<string, any>()
+    const vendorByName = new Map<string, any>()
+
+    vendors.forEach(v => {
+      const vData = {
+        id: v.id,
+        name: v.name,
+        code: v.code,
+        phone: v.phone,
+        totalPiecesSold: 0,
+        totalRevenue: 0,
+        productsMap: new Map<string, any>()
+      }
+      vendorById.set(v.id, vData)
+      vendorByName.set(v.name.trim().toLowerCase(), vData)
+    })
+
+    // حصر مبيعات كل صنف ومورده
+    orderItems.forEach(oi => {
+      if (!oi.product) return
+
+      const p = oi.product
+      const returnedQty = oi.returnItems.reduce((sum, ri) => sum + (ri.quantity || 0), 0)
+      const returnedRefund = oi.returnItems.reduce((sum, ri) => sum + (ri.refundAmount || 0), 0)
+
+      const netQty = (oi.quantity || 0) - returnedQty
+      const netRevenue = ((oi.price || 0) * (oi.quantity || 0)) - returnedRefund
+
+      if (netQty <= 0 && netRevenue <= 0) return
+
+      let targetVendor: any = null
+      if (p.vendorId && vendorById.has(p.vendorId)) {
+        targetVendor = vendorById.get(p.vendorId)
+      } else if (p.vendor && vendorByName.has(p.vendor.trim().toLowerCase())) {
+        targetVendor = vendorByName.get(p.vendor.trim().toLowerCase())
+      } else if (p.vendor && p.vendor.trim() !== '') {
+        const cleanName = p.vendor.trim().toLowerCase()
+        if (!vendorByName.has(cleanName)) {
+          const newV = {
+            id: `temp-${cleanName}`,
+            name: p.vendor.trim(),
+            code: 'NEW',
+            phone: null,
+            totalPiecesSold: 0,
+            totalRevenue: 0,
+            productsMap: new Map<string, any>()
+          }
+          vendorByName.set(cleanName, newV)
+        }
+        targetVendor = vendorByName.get(cleanName)
+      }
+
+      if (targetVendor) {
+        targetVendor.totalPiecesSold += netQty
+        targetVendor.totalRevenue += netRevenue
+
+        const prodKey = p.id
+        if (!targetVendor.productsMap.has(prodKey)) {
+          targetVendor.productsMap.set(prodKey, {
+            id: p.id,
+            modelNo: p.modelNo,
+            color: p.color,
+            description: p.description || '',
+            currentStock: p.currentStock || 0,
+            price: p.price || oi.price,
+            cost: p.cost || 0,
+            soldQty: 0,
+            revenue: 0
+          })
+        }
+
+        const prodStats = targetVendor.productsMap.get(prodKey)
+        prodStats.soldQty += netQty
+        prodStats.revenue += netRevenue
+      }
+    })
+
+    // تجميع وتجهيز التقرير النهائي
+    const allUniqueVendors = Array.from(new Set([...vendorById.values(), ...vendorByName.values()]))
+
+    const sortedVendors = allUniqueVendors
+      .filter(v => v.totalPiecesSold > 0 || v.totalRevenue > 0)
+      .map(v => {
+        const productsList = Array.from(v.productsMap.values())
+          .sort((a: any, b: any) => b.soldQty - a.soldQty || b.revenue - a.revenue)
+
+        return {
+          id: v.id,
+          name: v.name,
+          code: v.code,
+          phone: v.phone,
+          totalPiecesSold: v.totalPiecesSold,
+          totalRevenue: Math.round(v.totalRevenue * 100) / 100,
+          modelsCount: productsList.length,
+          topProducts: productsList
+        }
+      })
+      .sort((a, b) => b.totalPiecesSold - a.totalPiecesSold || b.totalRevenue - a.totalRevenue)
+
+    return {
+      success: true,
+      data: JSON.parse(JSON.stringify(sortedVendors))
+    }
+  } catch (error: any) {
+    console.error('Error in getVendorsPerformanceReport:', error)
+    return { success: false, error: error.message || 'فشل جلب تقرير أداء الموردين' }
+  }
+}

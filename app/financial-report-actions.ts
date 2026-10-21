@@ -73,12 +73,20 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
     })
 
     // ج. المصروفات العامة والتشغيلية
+    // ✅ تم استبعاد سندات شراء الأصول الرأسمالية ورد السلف/القروض لأنها حركات تمويلية ورأسمالية وليست مصروفات تشغيلية
     const operatingExpenses = await prisma.payment.findMany({
       where: {
         createdAt: { gte: startDate, lte: endDate },
         type: 'OUT',
         vendorId: null,
-        checkRefId: null
+        checkRefId: null,
+        NOT: [
+          { description: { contains: 'أصل ثابت' } },
+          { description: { contains: 'شراء أصل' } },
+          { description: { contains: 'سلفة/قرض' } },
+          { description: { contains: 'سداد سلفة' } },
+          { description: { contains: 'رد سداد' } }
+        ]
       }
     })
 
@@ -360,8 +368,8 @@ export async function getBalanceSheet() {
       }
     })
 
-    let totalVendorPayables = 0     // مستحقات الموردين (لهم عندنا: 769,315.6)
-    let totalVendorDebtors = 0      // أرصدة موردين مدينة (لنا عندهم: 2,000)
+    let totalVendorPayables = 0     // مستحقات الموردين
+    let totalVendorDebtors = 0      // أرصدة موردين مدينة
 
     vendors.forEach(vendor => {
       // 1. بضاعة المخزون الافتتاحي المربوطة بالـ ID أو باسم المورد
@@ -439,7 +447,7 @@ export async function getBalanceSheet() {
 
     const totalLiabilities = totalVendorPayables + totalChecksPayable + totalCreditorsLiability + totalCustomerCreditLiabilities
 
-    // إجمالي الأصول الكلية (مع إضافة أرصدة الموردين المدينة 2,000 ج.م كأصول متداولة)
+    // إجمالي الأصول الكلية
     const totalCurrentAssets = totalCashInSafes + totalBankBalances + totalCustomerDebtors + totalInventoryValueAtCost + totalDebtorsReceivables + totalVendorDebtors
     const totalAssets = totalCurrentAssets + totalFixedAssetsValue
 
@@ -460,20 +468,20 @@ export async function getBalanceSheet() {
         assets: {
           cashInSafes: totalCashInSafes,
           bankBalances: totalBankBalances,
-          receivables: totalCustomerDebtors, // مديونيات العملاء المطابقة لـ 23,136
-          netReceivables: netCustomerReceivables, // الصافي المطابق لـ 13,945.75
-          customerCredits: totalCustomerCreditors, // المطابق لـ 9,190.25
+          receivables: totalCustomerDebtors,
+          netReceivables: netCustomerReceivables,
+          customerCredits: totalCustomerCreditors,
           inventoryAtCost: totalInventoryValueAtCost,
           inventoryAtPrice: totalInventoryValueAtPrice,
           debtorsReceivables: totalDebtorsReceivables,
-          vendorDebtors: totalVendorDebtors, // أرصدة الموردين المدينة المطابقة لـ 2,000
+          vendorDebtors: totalVendorDebtors,
           totalCurrentAssets,
           fixedAssets: totalFixedAssetsValue,
           totalAssets
         },
         liabilities: {
-          vendorPayables: totalVendorPayables, // مستحقات الموردين المطابقة تماماً لـ 769,315.6
-          netVendorPayables: netVendorPayables, // صافي مستحقات الموردين المطابق لـ 767,315.6
+          vendorPayables: totalVendorPayables,
+          netVendorPayables: netVendorPayables,
           checksPayable: totalChecksPayable,
           creditorsLiability: totalCreditorsLiability,
           customerCredits: totalCustomerCreditLiabilities,
