@@ -1,360 +1,696 @@
 'use client'
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   getCustomers, 
   getSafes, 
-  createPayment, 
-  searchCustomers, 
   checkCustomerPhone, 
-  getEmployees, 
-  createEmployeePayment,
-  checkHrConnection
-} from '@/app/actions/index'; // 👈 استيراد صريح ومباشر من index.ts لمنع أي تداخل
+  getEmployees 
+} from '@/app/actions/index';
 import { getVendors } from '@/app/vendor-actions';
-import { addCustomer } from '@/app/admin-actions';
+import { addCustomer, recordUnifiedPayment } from '@/app/admin-actions';
 import { useSession } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 interface Safe { id: string; name: string; }
-interface Customer { id: string; name: string; phone?: string; code?: string; source?: string; }
-interface Vendor { id: string; name: string; code: string; phone?: string | null; phone2?: string | null; address?: string | null; notes?: string | null; source?: string; _count?: { products: number }; }
-interface Employee { id: string; name: string; }
+interface Customer { id: string; name: string; phone?: string | null; code?: string; }
+interface Vendor { id: string; name: string; code: string; phone?: string | null; }
+interface Employee { id: string; name: string; phone?: string | null; }
+
+interface UnifiedParty {
+  id: string;
+  name: string;
+  code?: string;
+  phone?: string | null;
+  partyType: 'CUSTOMER' | 'VENDOR' | 'EMPLOYEE';
+  typeLabel: 'عميل' | 'مورد' | 'موظف';
+  badgeClass: string;
+}
 
 export default function CashManagementPage() {
   const { data: session } = useSession();
   const router = useRouter();
 
+  // نوع السند الأساسي: قبض أو صرف أو تحويل
   const [activeTab, setActiveTab] = useState<'IN' | 'OUT' | 'TRANSFER'>('IN');
-  const [payoutType, setPayoutType] = useState<'VENDOR' | 'EXPENSE' | 'EMPLOYEE'>('VENDOR');
 
+  // الخزائن
   const [safes, setSafes] = useState<Safe[]>([]);
+  const [selectedSafeId, setSelectedSafeId] = useState('');       
+  const [targetSafeId, setTargetSafeId] = useState('');           
+
+  // البيانات المالية
   const [amount, setAmount] = useState('');
   const [currency, setCurrency] = useState('EGP'); 
   const [description, setDescription] = useState('');
   const [paymentDate, setPaymentDate] = useState(new Date().toISOString().split('T')[0]);
   const [isSaving, setIsSaving] = useState(false);
-  const [isTestingHr, setIsTestingHr] = useState(false);
 
-  const [selectedSafeId, setSelectedSafeId] = useState('');       
-  const [targetSafeId, setTargetSafeId] = useState('');           
-
-  const [selectedCustomerId, setSelectedCustomerId] = useState('');
-  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
-  const [customerResults, setCustomerResults] = useState<Customer[]>([]);
-  const [showCustomerList, setShowCustomerList] = useState(false);
-  const [isSearchingCustomer, setIsSearchingCustomer] = useState(false);
-  const customerListRef = useRef<HTMLDivElement>(null);
-
+  // الكيانات الخام
+  const [customers, setCustomers] = useState<Customer[]>([]);
   const [vendors, setVendors] = useState<Vendor[]>([]);
-  const [selectedVendorId, setSelectedVendorId] = useState('');
-  const [vendorSearchTerm, setVendorSearchTerm] = useState('');
-  const [showVendorList, setShowVendorList] = useState(false);
-  const vendorListRef = useRef<HTMLDivElement>(null);
-
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
 
+  // الطرف المختار الموحد
+  const [selectedParty, setSelectedParty] = useState<UnifiedParty | null>(null);
+  const [partySearchTerm, setPartySearchTerm] = useState('');
+  const [showPartyDropdown, setShowPartyDropdown] = useState(false);
+  const [partyFilterType, setPartyFilterType] = useState<'ALL' | 'CUSTOMER' | 'VENDOR' | 'EMPLOYEE'>('ALL');
+  const partyDropdownRef = useRef<HTMLDivElement>(null);
+
+  // خيار المصروفات العامة (في حالة الصرف فقط بدون طرف محدد)
+  const [isGeneralExpense, setIsGeneralExpense] = useState(false);
+
+  // مودال الإضافة السريعة لعميل جديد
   const [isQuickAddOpen, setIsQuickAddOpen] = useState(false);
   const [newCust, setNewCust] = useState({ name: '', phone: '', phone2: '', code: '', address: '' });
   const [isSavingCust, setIsSavingCust] = useState(false);
 
   useEffect(() => {
-    getCustomers().then(setCustomerResults);
-    getSafes().then((data: Safe[]) => {
-      setSafes(data);
-      if (data.length > 0) {
-        const mainSafe = data.find(safe => safe.name === 'الخزنة الرئيسية');
-        setSelectedSafeId(mainSafe?.id || data[0].id);
-        if (data.length > 1) {
-            const secondSafe = data.find(s => s.id !== (mainSafe ? mainSafe.id : data[0].id));
-            if(secondSafe) setTargetSafeId(secondSafe.id);
+    Promise.all([
+      getCustomers(),
+      getVendors(),
+      getEmployees(),
+      getSafes()
+    ]).then(([custs, vends, emps, safesData]) => {
+      setCustomers(custs || []);
+      setVendors(vends || []);
+      if (emps?.success && emps.data) setEmployees(emps.data);
+      else if (Array.isArray(emps)) setEmployees(emps);
+
+      if (safesData && safesData.length > 0) {
+        setSafes(safesData);
+        const mainSafe = safesData.find((s: Safe) => s.name === 'الخزنة الرئيسية');
+        setSelectedSafeId(mainSafe?.id || safesData[0].id);
+        if (safesData.length > 1) {
+          const secondSafe = safesData.find((s: Safe) => s.id !== (mainSafe ? mainSafe.id : safesData[0].id));
+          if (secondSafe) setTargetSafeId(secondSafe.id);
         }
-      }
-    });
-    getVendors().then(setVendors);
-    getEmployees().then(res => {
-      if (res.success && res.data) {
-        setEmployees(res.data);
       }
     });
 
     const handleClickOutside = (event: MouseEvent) => {
-      if (customerListRef.current && !customerListRef.current.contains(event.target as Node)) setShowCustomerList(false);
-      if (vendorListRef.current && !vendorListRef.current.contains(event.target as Node)) setShowVendorList(false);
+      if (partyDropdownRef.current && !partyDropdownRef.current.contains(event.target as Node)) {
+        setShowPartyDropdown(false);
+      }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  useEffect(() => {
-      const delayDebounceFn = setTimeout(async () => {
-        if (customerSearchTerm.length > 0) {
-            setIsSearchingCustomer(true);
-            const results = await searchCustomers(customerSearchTerm);
-            setCustomerResults(results);
-            setIsSearchingCustomer(false);
-        } else { getCustomers().then(setCustomerResults); }
-      }, 300);
-      return () => clearTimeout(delayDebounceFn);
-  }, [customerSearchTerm]);
+  // دمج كل الأطراف في قائمة واحدة موحدة بتمييز بصري
+  const allParties = useMemo<UnifiedParty[]>(() => {
+    const list: UnifiedParty[] = [];
 
-  // فحص الاتصال المباشر بتطبيق الحضور والانصراف
-  const handleTestHr = async () => {
-    setIsTestingHr(true);
-    const test = await checkHrConnection();
-    setIsTestingHr(false);
+    customers.forEach(c => {
+      list.push({
+        id: c.id,
+        name: c.name,
+        code: c.code,
+        phone: c.phone,
+        partyType: 'CUSTOMER',
+        typeLabel: 'عميل',
+        badgeClass: 'bg-blue-100 text-blue-800 border-blue-300'
+      });
+    });
 
-    if (test.success) {
-      alert(`✅ الاتصال ناجح ومباشر بسوبابيز الحضور (amrhh)!\n- عدد الموظفين المسجلين هناك: ${test.employeesCount} موظف.\n- آخر حركة مسجلة برقم #${test.lastTransaction?.id || 0}`);
-    } else {
-      alert(`❌ فشل الاتصال بقاعدة بيانات الحضور:\n${test.error}\n(تأكد من تثبيت مكتبة pg وإعادة تشغيل السيرفر).`);
-    }
-  };
+    vendors.forEach(v => {
+      list.push({
+        id: v.id,
+        name: v.name,
+        code: v.code,
+        phone: v.phone,
+        partyType: 'VENDOR',
+        typeLabel: 'مورد',
+        badgeClass: 'bg-purple-100 text-purple-800 border-purple-300'
+      });
+    });
 
-  const handleQuickAddCustomer = async (e: React.FormEvent) => {
-      e.preventDefault();
-      if(!newCust.name) return alert('الاسم مطلوب');
-      setIsSavingCust(true);
-      if (newCust.phone || newCust.phone2) {
-          const checkRes = await checkCustomerPhone(newCust.phone || newCust.phone2);
-          if (checkRes.exists && !window.confirm(`⚠️ رقم الهاتف مسجل للعميل: ${checkRes.name}. هل تريد الاستمرار؟`)) {
-              setIsSavingCust(false);
-              return;
-          }
+    employees.forEach(e => {
+      list.push({
+        id: e.id,
+        name: e.name,
+        phone: e.phone,
+        partyType: 'EMPLOYEE',
+        typeLabel: 'موظف',
+        badgeClass: 'bg-teal-100 text-teal-800 border-teal-300'
+      });
+    });
+
+    return list;
+  }, [customers, vendors, employees]);
+
+  // نتائج البحث الحي المصفاة
+  const filteredParties = useMemo(() => {
+    const q = partySearchTerm.trim().toLowerCase();
+    return allParties.filter(p => {
+      if (partyFilterType !== 'ALL' && p.partyType !== partyFilterType) {
+        return false;
       }
-      const res = await addCustomer({ ...newCust, source: 'QUICK' });
-      if(res.success) {
-          setSelectedCustomerId(res.customer.id);
-          setCustomerSearchTerm(res.customer.name);
-          setIsQuickAddOpen(false);
-          setNewCust({ name: '', phone: '', phone2: '', code: '', address: '' });
-      } else { alert("خطأ: " + res.error); }
-      setIsSavingCust(false);
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        (p.code && p.code.toLowerCase().includes(q)) ||
+        (p.phone && p.phone.includes(q))
+      );
+    }).slice(0, 30);
+  }, [allParties, partySearchTerm, partyFilterType]);
+
+  const handleSelectParty = (party: UnifiedParty) => {
+    setSelectedParty(party);
+    setIsGeneralExpense(false);
+    setShowPartyDropdown(false);
+    setPartySearchTerm('');
   };
 
+  const handleClearParty = () => {
+    setSelectedParty(null);
+    setPartySearchTerm('');
+  };
+
+  // تبديل نوع السند وإعادة ضبط الحقول
+  const handleTabSwitch = (tab: 'IN' | 'OUT' | 'TRANSFER') => {
+    setActiveTab(tab);
+    setIsGeneralExpense(false);
+  };
+
+  // حفظ السند
   const handleSave = async () => {
-    if (!amount || parseFloat(amount) <= 0) return alert('المبلغ يجب أن يكون أكبر من صفر');
-    if (!selectedSafeId) return alert('يجب اختيار الخزنة');
-    
-    setIsSaving(true);
-    let res: { success: boolean; error?: string; message?: string };
-
-    if (activeTab === 'OUT' && payoutType === 'EMPLOYEE') {
-        if (!selectedEmployeeId) { setIsSaving(false); return alert('يجب اختيار الموظف'); }
-        if (!description) { setIsSaving(false); return alert('يجب كتابة بيان الصرف للموظف'); }
-        
-        res = await createEmployeePayment({
-            employeeId: selectedEmployeeId,
-            amount: parseFloat(amount),
-            description: description,
-            safeId: selectedSafeId,
-            transactionDate: new Date(paymentDate)
-        }, session?.user?.image as string);
-    
-    } else {
-        if (activeTab === 'IN' && !selectedCustomerId) { setIsSaving(false); return alert('يجب اختيار العميل'); }
-        if (activeTab === 'OUT' && payoutType === 'VENDOR' && !selectedVendorId) { setIsSaving(false); return alert('يجب اختيار المورد'); }
-        if (activeTab === 'OUT' && payoutType === 'EXPENSE' && !description) { setIsSaving(false); return alert('يجب كتابة بيان المصروف'); }
-        if (activeTab === 'TRANSFER' && selectedSafeId === targetSafeId) { setIsSaving(false); return alert('لا يمكن التحويل لنفس الخزنة'); }
-        if (activeTab === 'TRANSFER' && !description) { setIsSaving(false); return alert('يجب كتابة بيان التحويل'); }
-        
-        let finalDescription = description;
-        if (!finalDescription) {
-            if (activeTab === 'IN') finalDescription = `تحصيل من العميل: ${customerResults.find(c => c.id === selectedCustomerId)?.name || ''}`;
-            else if (activeTab === 'OUT' && payoutType === 'VENDOR') finalDescription = `دفع للمورد: ${vendors.find(v => v.id === selectedVendorId)?.name || ''}`;
-        }
-
-        res = await createPayment({
-            type: activeTab,
-            customerId: activeTab === 'IN' ? selectedCustomerId : undefined,
-            vendorId: activeTab === 'OUT' && payoutType === 'VENDOR' ? selectedVendorId : undefined,
-            amount: parseFloat(amount),
-            currency: currency, 
-            safeId: selectedSafeId,
-            targetSafeId: activeTab === 'TRANSFER' ? targetSafeId : undefined,
-            description: finalDescription,
-            isExpense: activeTab === 'OUT' && payoutType === 'EXPENSE',
-            paymentDate: paymentDate,
-        }, session?.user?.image as string);
+    const numAmount = parseFloat(amount);
+    if (!amount || isNaN(numAmount) || numAmount <= 0) {
+      return alert('المبلغ يجب أن يكون أكبر من صفر');
+    }
+    if (!selectedSafeId) {
+      return alert('يجب تحديد الخزنة');
     }
 
-    if (res.success) { 
-      alert(res.message || '✅ تمت العملية بنجاح'); 
+    if (activeTab === 'TRANSFER') {
+      if (!targetSafeId || selectedSafeId === targetSafeId) {
+        return alert('يرجى اختيار خزنة مستهدفة مختلفة للتحويل');
+      }
+    } else {
+      if (!selectedParty && !isGeneralExpense) {
+        return alert('يرجى تحديد الطرف (عميل، مورد، أو موظف) أو اختيار مصروفات عامة');
+      }
+    }
+
+    setIsSaving(true);
+
+    const res = await recordUnifiedPayment({
+      type: activeTab,
+      partyType: isGeneralExpense ? 'EXPENSE' : (selectedParty ? selectedParty.partyType : 'EXPENSE'),
+      partyId: selectedParty?.id,
+      partyName: selectedParty?.name,
+      amount: numAmount,
+      currency,
+      safeId: selectedSafeId,
+      targetSafeId: activeTab === 'TRANSFER' ? targetSafeId : undefined,
+      description: description.trim() || undefined,
+      date: paymentDate
+    }, session?.user?.image as string);
+
+    setIsSaving(false);
+
+    if (res.success) {
+      alert(res.message);
       setAmount('');
       setDescription('');
-      setPaymentDate(new Date().toISOString().split('T')[0]);
-      setSelectedCustomerId('');
-      setCustomerSearchTerm('');
-      setSelectedVendorId('');
-      setVendorSearchTerm('');
-      setSelectedEmployeeId('');
+      setSelectedParty(null);
+      setIsGeneralExpense(false);
     } else {
-      alert('❌ خطأ: ' + (res.error || 'حدث خطأ أثناء الحفظ'));
+      alert('❌ خطأ: ' + res.error);
     }
-    setIsSaving(false);
   };
 
-  const selectedVendor = vendors.find(v => v.id === selectedVendorId);
-  const selectedCustomer = customerResults.find(c => c.id === selectedCustomerId);
-
-  const getButtonColor = () => {
-    if (activeTab === 'IN') return 'bg-green-600 hover:bg-green-700';
-    if (activeTab === 'OUT') {
-      if (payoutType === 'EMPLOYEE') return 'bg-teal-600 hover:bg-teal-700';
-      if (payoutType === 'VENDOR') return 'bg-purple-600 hover:bg-purple-700';
-      return 'bg-orange-500 hover:bg-orange-600';
+  // حفظ عميل جديد سريع
+  const handleQuickAddCustomer = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newCust.name) return alert('الاسم مطلوب');
+    setIsSavingCust(true);
+    if (newCust.phone || newCust.phone2) {
+      const checkRes = await checkCustomerPhone(newCust.phone || newCust.phone2);
+      if (checkRes.exists && !window.confirm(`⚠️ رقم الهاتف مسجل للعميل: ${checkRes.name}. هل تريد الاستمرار؟`)) {
+        setIsSavingCust(false);
+        return;
+      }
     }
-    return 'bg-blue-600 hover:bg-blue-700';
-  };
-
-  const getButtonLabel = () => {
-    if (isSaving) return 'جاري الحفظ والترحيل...';
-    if (activeTab === 'IN') return '💾 حفظ سند قبض';
-    if (activeTab === 'OUT') {
-      if (payoutType === 'VENDOR') return '💾 حفظ سند دفع للمورد';
-      if (payoutType === 'EMPLOYEE') return '💾 حفظ وترحيل صرف لموظف 🔗';
-      return '💾 حفظ سند مصروفات';
+    const res = await addCustomer({ ...newCust, source: 'QUICK' });
+    if (res.success && res.customer) {
+      const addedParty: UnifiedParty = {
+        id: res.customer.id,
+        name: res.customer.name,
+        code: res.customer.code,
+        phone: res.customer.phone,
+        partyType: 'CUSTOMER',
+        typeLabel: 'عميل',
+        badgeClass: 'bg-blue-100 text-blue-800 border-blue-300'
+      };
+      setCustomers(prev => [res.customer, ...prev]);
+      setSelectedParty(addedParty);
+      setIsQuickAddOpen(false);
+      setNewCust({ name: '', phone: '', phone2: '', code: '', address: '' });
+    } else {
+      alert("خطأ: " + res.error);
     }
-    return '💾 حفظ عملية التحويل';
+    setIsSavingCust(false);
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 font-sans" dir="rtl">
-        <div className="max-w-2xl mx-auto">
-            <h1 className="text-2xl font-bold mb-6 text-gray-800">💰 إدارة النقدية والخزينة</h1>
-            
-            <div className="flex gap-2 mb-6 bg-white p-2 rounded-xl shadow-sm">
-                <button onClick={() => setActiveTab('IN')} className={`flex-1 py-3 font-bold rounded-lg transition ${ activeTab === 'IN' ? 'bg-green-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200' }`}>📥 قبض</button>
-                <button onClick={() => setActiveTab('OUT')} className={`flex-1 py-3 font-bold rounded-lg transition ${ activeTab === 'OUT' ? 'bg-red-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200' }`}>📤 صرف</button>
-                <button onClick={() => setActiveTab('TRANSFER')} className={`flex-1 py-3 font-bold rounded-lg transition ${ activeTab === 'TRANSFER' ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-700 hover:bg-gray-200' }`}>🔄 تحويل</button>
-            </div>
+    <div className="min-h-screen bg-gray-50 p-4 font-sans pb-32" dir="rtl">
+      <div className="max-w-2xl mx-auto space-y-6">
+        
+        {/* Header */}
+        <div className="flex justify-between items-center bg-white p-4 rounded-2xl shadow-sm border border-gray-100">
+          <div>
+            <h1 className="text-xl md:text-2xl font-black text-gray-800 flex items-center gap-2">
+              <span>💰</span>
+              <span>إدارة النقدية والخزينة</span>
+            </h1>
+            <p className="text-xs text-gray-500 mt-0.5">سندات القبض والدفع الموحدة للعملاء والموردين والموظفين</p>
+          </div>
 
-            <div className="bg-white p-6 rounded-xl shadow-sm space-y-6">
-                
-                {activeTab === 'IN' && (
-                  <div className="bg-green-50 border-2 border-green-200 rounded-xl p-4">
-                    <h3 className="text-green-800 font-bold mb-3 flex items-center gap-2"><span className="text-2xl">📥</span><span>سند قبض من عميل</span></h3>
-                    <div className="relative animate-fade-in" ref={customerListRef}>
-                        <div className="flex justify-between items-center mb-1">
-                            <label className="text-sm font-bold text-green-800">العميل</label>
-                            <button onClick={() => setIsQuickAddOpen(true)} className="text-xs bg-green-200 text-green-800 px-2 py-1 rounded font-bold hover:bg-green-300">➕ عميل جديد</button>
-                        </div>
-                        <input type="text" placeholder="ابحث باسم العميل أو الهاتف..." value={customerSearchTerm} onChange={(e) => { setCustomerSearchTerm(e.target.value); setShowCustomerList(true); }} onFocus={() => setShowCustomerList(true)} className="w-full p-3 border-2 border-green-300 rounded-lg bg-white text-lg outline-none focus:border-green-500" />
-                        {isSearchingCustomer && <span className="absolute left-3 top-10 text-gray-400 text-xs">جاري البحث...</span>}
-                        {showCustomerList && (
-                            <div className="absolute top-full left-0 right-0 bg-white border-2 border-green-200 z-50 max-h-60 overflow-y-auto shadow-xl rounded-b-lg">
-                                {customerResults.map(c => (
-                                    <div key={c.id} onClick={() => { setSelectedCustomerId(c.id); setCustomerSearchTerm(c.name); setShowCustomerList(false); }} className={`p-3 hover:bg-green-50 cursor-pointer border-b ${c.source === 'QUICK' ? 'bg-purple-50' : ''}`}><div className="font-bold">{c.name} {c.source === 'QUICK' && '✨'}</div><div className="text-xs text-gray-500">{c.phone} | {c.code}</div></div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
-                    {selectedCustomer && <div className="mt-2 p-2 bg-green-100 border border-green-300 rounded-lg text-sm"><span className="font-bold text-green-800">✓ العميل: </span><span>{selectedCustomer.name}</span><span className="text-xs text-gray-600 mr-2">({selectedCustomer.code})</span></div>}
-                  </div>
-                )}
+          <Link href="/admin/cash-management" className="text-xs font-bold text-blue-600 bg-blue-50 hover:bg-blue-100 px-3 py-2 rounded-xl border border-blue-200 transition">
+            ← سجل الخزينة
+          </Link>
+        </div>
+        
+        {/* أزرار التبديل الرئيسية: قبض / صرف / تحويل */}
+        <div className="flex gap-2 bg-white p-2 rounded-2xl shadow-sm border border-gray-100">
+          <button 
+            onClick={() => handleTabSwitch('IN')} 
+            className={`flex-1 py-3.5 font-black text-base rounded-xl transition flex items-center justify-center gap-2 ${
+              activeTab === 'IN' 
+                ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/30' 
+                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            <span>📥</span>
+            <span>قبض وارد</span>
+          </button>
 
-                {activeTab === 'OUT' && (
-                  <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 space-y-4">
-                    <h3 className="text-red-800 font-bold flex items-center gap-2"><span className="text-2xl">📤</span><span>سند صرف</span></h3>
-                    <div>
-                      <label className="text-sm font-bold text-red-800 block mb-2">نوع الصرف:</label>
-                      <div className="grid grid-cols-3 gap-2">
-                        <button type="button" onClick={() => { setPayoutType('VENDOR'); setDescription(''); }} className={`p-3 rounded-lg font-bold text-sm transition ${ payoutType === 'VENDOR' ? 'bg-purple-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border' }`}>🏪 دفع لمورد</button>
-                        <button type="button" onClick={() => { setPayoutType('EMPLOYEE'); setDescription(''); }} className={`p-3 rounded-lg font-bold text-sm transition ${ payoutType === 'EMPLOYEE' ? 'bg-teal-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border' }`}>👨‍💼 صرف لموظف (مربوط)</button>
-                        <button type="button" onClick={() => { setPayoutType('EXPENSE'); setDescription(''); }} className={`p-3 rounded-lg font-bold text-sm transition ${ payoutType === 'EXPENSE' ? 'bg-orange-600 text-white shadow-md' : 'bg-white text-gray-700 hover:bg-gray-100 border' }`}>💸 مصروفات</button>
-                      </div>
-                    </div>
+          <button 
+            onClick={() => handleTabSwitch('OUT')} 
+            className={`flex-1 py-3.5 font-black text-base rounded-xl transition flex items-center justify-center gap-2 ${
+              activeTab === 'OUT' 
+                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/30' 
+                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            <span>📤</span>
+            <span>صرف صادر</span>
+          </button>
 
-                    {payoutType === 'VENDOR' && (
-                      <div className="relative animate-fade-in" ref={vendorListRef}>
-                          <div className="flex justify-between items-center mb-1"><label className="text-sm font-bold text-purple-800">🏪 المورد</label><button onClick={() => router.push('/admin/vendors')} className="text-xs bg-purple-200 text-purple-800 px-2 py-1 rounded font-bold hover:bg-purple-300">➕ مورد جديد</button></div>
-                          <input type="text" placeholder="ابحث باسم المورد أو الكود..." value={vendorSearchTerm} onChange={(e) => { setVendorSearchTerm(e.target.value); setShowVendorList(true); if (e.target.value === '') setSelectedVendorId(''); }} onFocus={() => setShowVendorList(true)} className="w-full p-3 border-2 border-purple-300 rounded-lg bg-white text-lg outline-none focus:border-purple-500" />
-                          {showVendorList && (
-                              <div className="absolute top-full left-0 right-0 bg-white border-2 border-purple-200 z-50 max-h-60 overflow-y-auto shadow-xl rounded-b-lg">
-                                  {vendors.filter(v => v.name.includes(vendorSearchTerm)).map(v => <div key={v.id} onClick={() => { setSelectedVendorId(v.id); setVendorSearchTerm(v.name); setShowVendorList(false); }} className="p-3 hover:bg-purple-50 cursor-pointer border-b"><div className="font-bold flex justify-between"><span>{v.name}</span><span className="text-xs text-gray-500">{v.code}</span></div><div className="text-xs text-gray-500">{v.phone || 'لا يوجد هاتف'}</div></div>)}
-                              </div>
-                          )}
-                          {selectedVendor && <div className="mt-2 p-2 bg-purple-100 border border-purple-300 rounded-lg text-sm flex justify-between items-center"><div><span className="font-bold text-purple-800">✓ المورد: </span><span>{selectedVendor.name}</span><span className="text-xs text-gray-600 mr-2">({selectedVendor.code})</span></div><button onClick={() => { setSelectedVendorId(''); setVendorSearchTerm(''); }} className="text-red-600 hover:bg-red-50 px-2 py-1 rounded text-xs font-bold">✕</button></div>}
-                      </div>
-                    )}
-
-                    {payoutType === 'EMPLOYEE' && (
-                        <div className="bg-teal-50 border-2 border-teal-200 rounded-lg p-3 animate-fade-in space-y-3">
-                            <div className="flex flex-wrap justify-between items-center gap-2">
-                              <label className="text-sm font-bold text-teal-800 block">اختر الموظف *</label>
-                              
-                              {/* زر فحص الاتصال التفاعلي */}
-                              <button
-                                type="button"
-                                onClick={handleTestHr}
-                                disabled={isTestingHr}
-                                className="text-[11px] bg-teal-200 hover:bg-teal-300 text-teal-900 font-bold px-3 py-1 rounded-lg border border-teal-400 transition flex items-center gap-1 shadow-sm"
-                                title="اضغط للتأكد من الاتصال بسوبابيز الحضور وعرض عدد موظفيها"
-                              >
-                                <span>{isTestingHr ? '⏳' : '🔍'}</span>
-                                <span>{isTestingHr ? 'جاري الفحص...' : 'فحص الاتصال بـ amrhh'}</span>
-                              </button>
-                            </div>
-
-                            <select value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)} className="w-full p-3 border-2 border-teal-300 rounded-lg bg-white text-lg font-bold outline-none focus:border-teal-500">
-                                <option value="">-- اختر موظف --</option>
-                                {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
-                            </select>
-                            <label className="text-sm font-bold text-teal-800 block">البيان (مطلوب)</label>
-                            <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="مثال: سلفة نقدية على الراتب..." className="w-full p-3 border-2 border-teal-300 rounded-lg outline-none h-20 focus:border-teal-500" />
-                        </div>
-                    )}
-
-                    {payoutType === 'EXPENSE' && (
-                      <div className="bg-orange-50 border-2 border-orange-200 rounded-lg p-3">
-                        <label className="text-sm font-bold text-orange-800 block mb-2">💸 بيان المصروف (مطلوب)</label>
-                        <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="مثال: إيجار المحل، فاتورة كهرباء، بوفيه..." className="w-full p-3 border-2 border-orange-300 rounded-lg bg-white outline-none focus:border-orange-500 h-24"/>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {activeTab === 'TRANSFER' && (
-                  <div className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4">
-                    <h3 className="text-blue-800 font-bold mb-3 flex items-center gap-2"><span className="text-2xl">🔄</span><span>تحويل بين الخزنات</span></h3>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div><label className="block text-blue-800 text-sm mb-1 font-bold">من خزنة</label><select value={selectedSafeId} onChange={(e) => setSelectedSafeId(e.target.value)} className="w-full p-3 border-2 border-blue-300 rounded-lg bg-white text-sm font-bold">{safes.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-                      <div><label className="block text-blue-800 text-sm mb-1 font-bold">إلى خزنة</label><select value={targetSafeId} onChange={(e) => setTargetSafeId(e.target.value)} className="w-full p-3 border-2 border-blue-300 rounded-lg bg-white text-sm font-bold">{safes.filter(s => s.id !== selectedSafeId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>
-                    </div>
-                    <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="بيان التحويل (مطلوب)" className="w-full mt-4 p-3 border-2 border-blue-300 rounded-lg outline-none h-20 focus:border-blue-500" />
-                  </div>
-                )}
-
-                <div><label className="block text-gray-500 text-sm mb-1 font-bold">📅 التاريخ</label><input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} max={new Date().toISOString().split('T')[0]} className="w-full p-3 border-2 rounded-lg bg-gray-50 text-lg font-bold outline-none focus:border-blue-500" /></div>
-                
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <div className="md:col-span-2"><label className="block text-gray-500 text-sm mb-1 font-bold">💵 المبلغ</label><input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" className="w-full p-3 border-2 rounded-lg text-2xl font-bold outline-none focus:border-blue-500" /></div>
-                    <div><label className="block text-gray-500 text-sm mb-1 font-bold">💱 العملة</label><select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full p-3 border-2 rounded-lg bg-blue-50 text-lg font-bold outline-none"><option value="EGP">جنيه مصري</option><option value="USD">دولار أمريكي</option><option value="SAR">ريال سعودي</option><option value="KWD">دينار كويتي</option></select></div>
-                </div>
-
-                {activeTab !== 'TRANSFER' && (<div><label className="block text-gray-500 text-sm mb-1 font-bold">🏦 الخزنة</label><select value={selectedSafeId} onChange={(e) => setSelectedSafeId(e.target.value)} className="w-full p-3 border-2 rounded-lg bg-gray-50 text-lg">{safes.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></div>)}
-
-                {activeTab !== 'TRANSFER' && payoutType !== 'EXPENSE' && payoutType !== 'EMPLOYEE' && (<div><label className="block text-gray-500 text-sm mb-1 font-bold">📝 البيان (اختياري)</label><textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder={ activeTab === 'IN' ? 'مثال: دفعة عن فاتورة رقم...' : 'مثال: دفعة عن فاتورة شراء رقم...' } className="w-full p-3 border-2 rounded-lg outline-none h-20 focus:border-blue-500" /></div>)}
-
-                <button onClick={handleSave} disabled={isSaving} className={`w-full py-4 rounded-xl font-bold text-lg shadow-lg text-white transition ${getButtonColor()} disabled:bg-gray-400 disabled:cursor-not-allowed`}>{getButtonLabel()}</button>
-            </div>
+          <button 
+            onClick={() => handleTabSwitch('TRANSFER')} 
+            className={`flex-1 py-3.5 font-black text-base rounded-xl transition flex items-center justify-center gap-2 ${
+              activeTab === 'TRANSFER' 
+                ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/30' 
+                : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+            }`}
+          >
+            <span>🔄</span>
+            <span>تحويل بين الخزن</span>
+          </button>
         </div>
 
-        {isQuickAddOpen && (
-          <div className="fixed inset-0 bg-black bg-opacity-60 z-[100] flex justify-center items-center p-4">
-              <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-slide-up">
-                  <h3 className="font-bold text-lg mb-4 border-b pb-2 text-center text-blue-900">➕ إضافة عميل جديد</h3>
-                  <form onSubmit={handleQuickAddCustomer} className="space-y-4">
-                      <div><label className="block text-xs font-bold text-gray-500 mb-1">الاسم (مطلوب)</label><input type="text" value={newCust.name} onChange={e => setNewCust({...newCust, name: e.target.value})} className="w-full border-2 p-3 rounded-xl shadow-sm" required /></div>
-                      <div><label className="block text-xs font-bold text-gray-500 mb-1">الكود (تلقائي لو فارغ)</label><input type="text" value={newCust.code} onChange={e => setNewCust({...newCust, code: e.target.value})} className="w-full border-2 p-3 rounded-xl bg-gray-50" /></div>
-                      <div className="grid grid-cols-2 gap-2"><div><label className="block text-xs font-bold text-gray-500 mb-1">هاتف 1</label><input type="text" value={newCust.phone} onChange={e => setNewCust({...newCust, phone: e.target.value})} className="w-full border-2 p-3 rounded-xl shadow-sm" /></div><div><label className="block text-xs font-bold text-gray-500 mb-1">هاتف 2</label><input type="text" value={newCust.phone2} onChange={e => setNewCust({...newCust, phone2: e.target.value})} className="w-full border-2 p-3 rounded-xl shadow-sm bg-yellow-50" /></div></div>
-                      <div><label className="block text-xs font-bold text-gray-500 mb-1">العنوان</label><input type="text" value={newCust.address} onChange={e => setNewCust({...newCust, address: e.target.value})} className="w-full border-2 p-3 rounded-xl" /></div>
-                      <div className="flex gap-2 pt-2"><button type="button" onClick={() => setIsQuickAddOpen(false)} className="flex-1 bg-gray-100 py-3 rounded-lg font-bold hover:bg-gray-200">إلغاء</button><button type="submit" disabled={isSavingCust} className="flex-1 bg-blue-600 text-white py-3 rounded-lg font-bold shadow-lg hover:bg-blue-700">حفظ واختيار ✅</button></div>
-                  </form>
+        {/* الصندوق التفاعلي للبيانات */}
+        <div className="bg-white p-6 rounded-2xl shadow-sm border border-gray-100 space-y-5">
+            
+            {/* في حال القبض (IN) أو الصرف (OUT): اختيار الطرف الموحد */}
+            {activeTab !== 'TRANSFER' && (
+              <div className={`p-4 rounded-2xl border-2 transition-all ${
+                activeTab === 'IN' ? 'bg-emerald-50/60 border-emerald-200' : 'bg-rose-50/60 border-rose-200'
+              }`}>
+                
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className={`font-black text-sm flex items-center gap-1.5 ${
+                    activeTab === 'IN' ? 'text-emerald-900' : 'text-rose-900'
+                  }`}>
+                    <span>{activeTab === 'IN' ? '📥' : '📤'}</span>
+                    <span>
+                      {activeTab === 'IN' 
+                        ? 'سند قبض من (عميل / مورد / موظف)' 
+                        : 'سند صرف إلى (مورد / عميل / موظف / مصروفات)'
+                      }
+                    </span>
+                  </h3>
+
+                  <div className="flex gap-1.5 items-center">
+                    {activeTab === 'OUT' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsGeneralExpense(!isGeneralExpense);
+                          setSelectedParty(null);
+                        }}
+                        className={`text-xs px-2.5 py-1 rounded-lg font-bold border transition ${
+                          isGeneralExpense 
+                            ? 'bg-orange-600 text-white border-orange-500' 
+                            : 'bg-white text-orange-700 border-orange-300 hover:bg-orange-50'
+                        }`}
+                      >
+                        {isGeneralExpense ? '✓ مصروفات عامة' : '💸 مصروفات عامة ونثريات'}
+                      </button>
+                    )}
+
+                    <button 
+                      type="button"
+                      onClick={() => setIsQuickAddOpen(true)} 
+                      className="text-xs bg-white text-blue-700 border border-blue-300 px-2.5 py-1 rounded-lg font-bold hover:bg-blue-50 transition"
+                    >
+                      ➕ عميل جديد
+                    </button>
+                  </div>
+                </div>
+
+                {/* لو اختار مصروفات عامة بدون طرف */}
+                {isGeneralExpense ? (
+                  <div className="p-3 bg-orange-100/70 border border-orange-300 rounded-xl text-xs text-orange-950 font-bold flex justify-between items-center">
+                    <span>💡 تم اختيار: <b>سند مصروفات عامة ونثريات (بدون ربط بطرف)</b></span>
+                    <button 
+                      type="button" 
+                      onClick={() => setIsGeneralExpense(false)} 
+                      className="text-red-600 hover:underline font-bold"
+                    >
+                      إلغاء ✕
+                    </button>
+                  </div>
+                ) : (
+                  /* البحث الموحد في كل الأطراف */
+                  <div className="relative" ref={partyDropdownRef}>
+                    
+                    {/* فلاتر تصفية سريعة داخل البحث */}
+                    <div className="flex gap-1 mb-2">
+                      <button
+                        type="button"
+                        onClick={() => setPartyFilterType('ALL')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                          partyFilterType === 'ALL' ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 border'
+                        }`}
+                      >
+                        الكل ({allParties.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPartyFilterType('CUSTOMER')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                          partyFilterType === 'CUSTOMER' ? 'bg-blue-600 text-white' : 'bg-white text-blue-700 border border-blue-200'
+                        }`}
+                      >
+                        العملاء ({customers.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPartyFilterType('VENDOR')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                          partyFilterType === 'VENDOR' ? 'bg-purple-600 text-white' : 'bg-white text-purple-700 border border-purple-200'
+                        }`}
+                      >
+                        الموردين ({vendors.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPartyFilterType('EMPLOYEE')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition ${
+                          partyFilterType === 'EMPLOYEE' ? 'bg-teal-600 text-white' : 'bg-white text-teal-700 border border-teal-200'
+                        }`}
+                      >
+                        الموظفين ({employees.length})
+                      </button>
+                    </div>
+
+                    {/* حقل البحث */}
+                    <input 
+                      type="text" 
+                      placeholder="🔍 ابحث بالاسم، الكود، أو رقم الهاتف (عميل، مورد، موظف)..." 
+                      value={partySearchTerm} 
+                      onChange={(e) => { 
+                        setPartySearchTerm(e.target.value); 
+                        setShowPartyDropdown(true); 
+                      }} 
+                      onFocus={() => setShowPartyDropdown(true)} 
+                      className="w-full p-3 border-2 border-gray-300 rounded-xl bg-white text-sm font-bold outline-none focus:border-blue-500 transition" 
+                    />
+
+                    {/* القائمة المنسدلة للنتائج مع الأوسمة الواضحة */}
+                    {showPartyDropdown && filteredParties.length > 0 && (
+                      <div className="absolute top-full left-0 right-0 bg-white border-2 border-gray-200 z-50 max-h-64 overflow-y-auto shadow-2xl rounded-xl mt-1 divide-y divide-gray-100">
+                        {filteredParties.map(party => (
+                          <div 
+                            key={`${party.partyType}-${party.id}`} 
+                            onClick={() => handleSelectParty(party)} 
+                            className="p-3 hover:bg-blue-50 cursor-pointer flex justify-between items-center transition"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2 py-0.5 rounded text-[11px] font-black border ${party.badgeClass}`}>
+                                {party.typeLabel}
+                              </span>
+                              <span className="font-bold text-gray-900 text-sm">{party.name}</span>
+                            </div>
+
+                            <div className="text-xs text-gray-500 font-mono">
+                              {party.phone || party.code || '-'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* الطرف المختار مع وسامه */}
+                    {selectedParty && (
+                      <div className="mt-2.5 p-3 bg-white border-2 border-gray-300 rounded-xl shadow-sm flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2.5 py-1 rounded-lg text-xs font-black border ${selectedParty.badgeClass}`}>
+                            {selectedParty.typeLabel}
+                          </span>
+                          <div>
+                            <span className="font-black text-gray-900 text-base">{selectedParty.name}</span>
+                            {selectedParty.code && (
+                              <span className="text-xs text-gray-500 font-mono mr-2">({selectedParty.code})</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <button 
+                          type="button" 
+                          onClick={handleClearParty}
+                          className="text-red-600 hover:bg-red-50 p-1 rounded-lg text-xs font-bold transition"
+                          title="إلغاء الاختيار"
+                        >
+                          ✕ تغيير الطرف
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
               </div>
+            )}
+
+            {/* في حال التحويل (TRANSFER): اختيار الخزنتين */}
+            {activeTab === 'TRANSFER' && (
+              <div className="bg-blue-50 border-2 border-blue-200 rounded-2xl p-4 space-y-3">
+                <h3 className="text-blue-900 font-black text-sm flex items-center gap-2">
+                  <span>🔄</span>
+                  <span>تحويل رصيد بين الخزن</span>
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-blue-900 text-xs mb-1 font-bold">من خزنة (المصدر)</label>
+                    <select 
+                      value={selectedSafeId} 
+                      onChange={(e) => setSelectedSafeId(e.target.value)} 
+                      className="w-full p-2.5 border-2 border-blue-300 rounded-xl bg-white text-xs font-bold outline-none"
+                    >
+                      {safes.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-blue-900 text-xs mb-1 font-bold">إلى خزنة (المستهدفة)</label>
+                    <select 
+                      value={targetSafeId} 
+                      onChange={(e) => setTargetSafeId(e.target.value)} 
+                      className="w-full p-2.5 border-2 border-blue-300 rounded-xl bg-white text-xs font-bold outline-none"
+                    >
+                      {safes.filter(s => s.id !== selectedSafeId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* تاريخ السند */}
+            <div>
+              <label className="block text-gray-600 text-xs mb-1 font-bold">📅 تاريخ العملية</label>
+              <input 
+                type="date" 
+                value={paymentDate} 
+                onChange={(e) => setPaymentDate(e.target.value)} 
+                className="w-full p-3 border-2 border-gray-200 rounded-xl bg-gray-50 text-base font-bold outline-none focus:border-blue-500" 
+              />
+            </div>
+            
+            {/* المبلغ والعملة */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="md:col-span-2">
+                <label className="block text-gray-600 text-xs mb-1 font-bold">💵 المبلغ</label>
+                <input 
+                  type="number" 
+                  step="0.01" 
+                  value={amount} 
+                  onChange={(e) => setAmount(e.target.value)} 
+                  placeholder="0.00" 
+                  className="w-full p-3 border-2 border-gray-200 rounded-xl text-2xl font-black font-mono outline-none focus:border-blue-500" 
+                />
+              </div>
+
+              <div>
+                <label className="block text-gray-600 text-xs mb-1 font-bold">💱 العملة</label>
+                <select 
+                  value={currency} 
+                  onChange={(e) => setCurrency(e.target.value)} 
+                  className="w-full p-3.5 border-2 border-gray-200 rounded-xl bg-gray-50 text-sm font-bold outline-none"
+                >
+                  <option value="EGP">جنيه مصري</option>
+                  <option value="USD">دولار أمريكي</option>
+                  <option value="SAR">ريال سعودي</option>
+                  <option value="KWD">دينار كويتي</option>
+                </select>
+              </div>
+            </div>
+
+            {/* الخزنة (للقبض والصرف) */}
+            {activeTab !== 'TRANSFER' && (
+              <div>
+                <label className="block text-gray-600 text-xs mb-1 font-bold">🏦 الخزنة المعنية</label>
+                <select 
+                  value={selectedSafeId} 
+                  onChange={(e) => setSelectedSafeId(e.target.value)} 
+                  className="w-full p-3 border-2 border-gray-200 rounded-xl bg-gray-50 text-sm font-bold outline-none"
+                >
+                  {safes.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+            )}
+
+            {/* البيان والوصف */}
+            <div>
+              <label className="block text-gray-600 text-xs mb-1 font-bold">
+                📝 البيان / ملاحظات (اختياري - سيتم التوليد تلقائياً إن تركته فارغاً)
+              </label>
+              <textarea 
+                value={description} 
+                onChange={(e) => setDescription(e.target.value)} 
+                placeholder="اكتب تفاصيل أو سبب العملية..." 
+                className="w-full p-3 border-2 border-gray-200 rounded-xl outline-none text-xs focus:border-blue-500" 
+                rows={2}
+              />
+            </div>
+
+            {/* زر الحفظ التفاعلي */}
+            <button 
+              type="button"
+              onClick={handleSave} 
+              disabled={isSaving} 
+              className={`w-full py-4 rounded-xl font-black text-lg shadow-xl text-white transition disabled:bg-gray-400 disabled:cursor-not-allowed ${
+                activeTab === 'IN' 
+                  ? 'bg-emerald-600 hover:bg-emerald-700 shadow-emerald-600/30' 
+                  : activeTab === 'OUT' 
+                  ? 'bg-rose-600 hover:bg-rose-700 shadow-rose-600/30' 
+                  : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/30'
+              }`}
+            >
+              {isSaving ? 'جاري تسجيل وترحيل الحركة...' : (
+                activeTab === 'IN' ? '💾 حفظ وتأكيد سند قبض' :
+                activeTab === 'OUT' ? '💾 حفظ وتأكيد سند صرف' :
+                '💾 حفظ وتأكيد التحويل'
+              )}
+            </button>
+        </div>
+      </div>
+
+      {/* Modal إضافة عميل سريع */}
+      {isQuickAddOpen && (
+        <div className="fixed inset-0 bg-black/60 z-[100] flex justify-center items-center p-4">
+          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in fade-in duration-200">
+            <h3 className="font-black text-base mb-4 border-b pb-2 text-center text-blue-900">
+              ➕ إضافة عميل جديد
+            </h3>
+            <form onSubmit={handleQuickAddCustomer} className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">الاسم (مطلوب) *</label>
+                <input 
+                  type="text" 
+                  value={newCust.name} 
+                  onChange={e => setNewCust({...newCust, name: e.target.value})} 
+                  className="w-full border-2 p-2.5 rounded-xl text-xs font-bold outline-none" 
+                  required 
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">الكود (تلقائي لو تركته فارغاً)</label>
+                <input 
+                  type="text" 
+                  value={newCust.code} 
+                  onChange={e => setNewCust({...newCust, code: e.target.value})} 
+                  className="w-full border-2 p-2.5 rounded-xl bg-gray-50 text-xs font-mono" 
+                  placeholder="تلقائي..."
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">هاتف 1</label>
+                  <input 
+                    type="text" 
+                    value={newCust.phone} 
+                    onChange={e => setNewCust({...newCust, phone: e.target.value})} 
+                    className="w-full border-2 p-2 rounded-xl text-xs font-mono" 
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-600 mb-1">هاتف 2</label>
+                  <input 
+                    type="text" 
+                    value={newCust.phone2} 
+                    onChange={e => setNewCust({...newCust, phone2: e.target.value})} 
+                    className="w-full border-2 p-2 rounded-xl bg-yellow-50 text-xs font-mono" 
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">العنوان</label>
+                <input 
+                  type="text" 
+                  value={newCust.address} 
+                  onChange={e => setNewCust({...newCust, address: e.target.value})} 
+                  className="w-full border-2 p-2 rounded-xl text-xs" 
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button 
+                  type="button" 
+                  onClick={() => setIsQuickAddOpen(false)} 
+                  className="flex-1 bg-gray-100 py-2.5 rounded-xl font-bold text-xs hover:bg-gray-200"
+                >
+                  إلغاء
+                </button>
+                <button 
+                  type="submit" 
+                  disabled={isSavingCust} 
+                  className="flex-1 bg-blue-600 text-white py-2.5 rounded-xl font-bold text-xs shadow-lg hover:bg-blue-700"
+                >
+                  حفظ واختيار ✅
+                </button>
+              </div>
+            </form>
           </div>
-        )}
+        </div>
+      )}
     </div>
   );
 }

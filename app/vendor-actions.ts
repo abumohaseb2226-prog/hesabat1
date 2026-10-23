@@ -24,7 +24,8 @@ export async function getVendors() {
           select: {
             type: true,
             amount: true,
-            reference: true
+            reference: true,
+            description: true
           }
         },
         payments: {
@@ -46,7 +47,6 @@ export async function getVendors() {
       orderBy: { createdAt: 'desc' },
     })
 
-    // جلب المنتجات التي قد تكون مسجلة باسم المورد كنص بدون vendorId
     const allProductsWithName = await prisma.product.findMany({
       where: {
         vendorId: null,
@@ -71,43 +71,51 @@ export async function getVendors() {
     })
 
     const vendorsWithBalance = vendors.map(vendor => {
-      // 1. بضاعة المخزون الافتتاحي المربوطة بالمعرف أو بالاسم
       let initialStockTotal = vendor.products.reduce((s, p) => s + ((p.stockQty || 0) * (p.cost || 0)), 0)
       if (unlinkedProductsByVendorName.has(vendor.name.trim())) {
         initialStockTotal += unlinkedProductsByVendorName.get(vendor.name.trim())!
       }
 
-      // 2. الفواتير والمرتجعات المسجلة
-      const groupedTrans = new Map<string, { type: string, amount: number }>()
+      const groupedTrans = new Map<string, { type: string, amount: number, description?: string | null }>()
       vendor.transactions.forEach(t => {
         const refKey = t.reference ? `${t.type}_${t.reference}` : `single_${Math.random()}`
         if (groupedTrans.has(refKey)) {
           groupedTrans.get(refKey)!.amount += t.amount
         } else {
-          groupedTrans.set(refKey, { type: t.type, amount: t.amount })
+          groupedTrans.set(refKey, { type: t.type, amount: t.amount, description: t.description })
         }
       })
 
       let purchasesTotal = 0
       let returnsTotal = 0
       let transactionPayments = 0
+      let refundsInTotal = 0 // استرداد نقدي من المورد (دائن)
 
-      groupedTrans.forEach(t => {
-        if (t.type === 'PURCHASE') purchasesTotal += t.amount
-        else if (t.type === 'RETURN') returnsTotal += t.amount
-        else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) transactionPayments += t.amount
+      groupedTrans.forEach((t, refKey) => {
+        const isCashRefund = t.type === 'REFUND_IN' || 
+                             t.type === 'RECEIPT' || 
+                             refKey.includes('استرداد') || 
+                             (t.description && t.description.includes('استرداد نقدي'));
+
+        if (isCashRefund) {
+          refundsInTotal += t.amount
+        } else if (t.type === 'PURCHASE') {
+          purchasesTotal += t.amount
+        } else if (t.type === 'RETURN') {
+          returnsTotal += t.amount
+        } else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) {
+          transactionPayments += t.amount
+        }
       })
 
-      // 3. سندات الدفع النقدية مع تجنب تكرار الشيكات
       let cashPaymentsTotal = 0
       vendor.payments.forEach(p => {
         if (p.checkRefId || (p.description && p.description.includes('شيك #'))) {
-          return // تم احتسابه من حركة الشيك
+          return
         }
         cashPaymentsTotal += p.amount
       })
 
-      // 4. الشيكات الصادرة للمورد
       let additionalChecksTotal = 0
       const existingRefs = new Set(Array.from(groupedTrans.keys()))
       vendor.checks.forEach(chk => {
@@ -117,8 +125,10 @@ export async function getVendors() {
         }
       })
 
-      const totalCredits = initialStockTotal + purchasesTotal // له عندنا
-      const totalDebits = returnsTotal + transactionPayments + cashPaymentsTotal + additionalChecksTotal // دفعنا له / عليه
+      // دائن (له): بضاعة موردة + استرداد نقدية دخلت خزينتنا منه
+      const totalCredits = initialStockTotal + purchasesTotal + refundsInTotal
+      // مدين (عليه): سداد دفعناه له + مرتجع بضاعة أرجعناها له
+      const totalDebits = returnsTotal + transactionPayments + cashPaymentsTotal + additionalChecksTotal
 
       const balance = Math.round((totalCredits - totalDebits) * 100) / 100
 
@@ -319,7 +329,12 @@ export async function getVendorBalance(vendorId: string) {
     let debit = 0
 
     transactions.forEach(t => {
-      if (t.type === 'PURCHASE') {
+      const isCashRefund = t.type === 'REFUND_IN' || 
+                           t.type === 'RECEIPT' || 
+                           (t.reference && t.reference.includes('استرداد')) ||
+                           (t.description && t.description.includes('استرداد نقدي'));
+
+      if (isCashRefund || t.type === 'PURCHASE') {
         credit += t.amount
       } else if (t.type === 'PAYMENT' || t.type === 'RETURN') {
         debit += t.amount
@@ -342,7 +357,7 @@ export async function getVendorBalance(vendorId: string) {
 }
 
 // =========================================================================
-// 8. جلب كشف حساب المورد (دفتر الأستاذ)
+// 8. جلب كشف حساب المورد (دفتر الأستاذ) - مصحح محاسبياً بالكامل
 // =========================================================================
 export async function getVendorLedger(vendorId: string) {
   try {
@@ -354,7 +369,7 @@ export async function getVendorLedger(vendorId: string) {
       return { success: false, error: 'المورد غير موجود' }
     }
 
-    // 1. جلب الأصناف المربوطة بالمورد لحساب رصيد المخزون الافتتاحي
+    // 1. الأصناف والمخزون الافتتاحي
     const products = await prisma.product.findMany({
       where: {
         OR: [
@@ -381,7 +396,7 @@ export async function getVendorLedger(vendorId: string) {
       totalQuantity += (p.stockQty || 0)
     })
 
-    // 2. جلب حركات المورد من جدول VendorTransaction
+    // 2. حركات المورد من جدول VendorTransaction
     const transactions = await prisma.vendorTransaction.findMany({
       where: { vendorId },
       include: {
@@ -391,7 +406,7 @@ export async function getVendorLedger(vendorId: string) {
       orderBy: { createdAt: 'asc' },
     })
 
-    // 3. جلب الشيكات المسجلة لهذا المورد من جدول Check مباشرة
+    // 3. الشيكات
     const checks = await prisma.check.findMany({
       where: { vendorId },
       include: {
@@ -402,7 +417,7 @@ export async function getVendorLedger(vendorId: string) {
       orderBy: { issueDate: 'asc' },
     })
 
-    // 4. جلب سندات الدفع النقدية الصادرة للمورد من الخزنة
+    // 4. سندات الدفع النقدية الصادرة من الخزنة
     const payments = await prisma.payment.findMany({
       where: { 
         vendorId,
@@ -417,7 +432,7 @@ export async function getVendorLedger(vendorId: string) {
 
     const ledger: any[] = []
 
-    // أ. إضافة سطر رصيد المخزون الافتتاحي
+    // أ. رصيد المخزون الافتتاحي (دائن / له)
     if (productsTotal > 0) {
       ledger.push({
         id: 'initial-products-stock',
@@ -433,7 +448,7 @@ export async function getVendorLedger(vendorId: string) {
       })
     }
 
-    // ب. تجميع حركات الفواتير والمدفوعات من VendorTransaction
+    // ب. تجميع حركات الفواتير والمدفوعات
     const groupedByReference = new Map<string, any>()
 
     transactions.forEach(t => {
@@ -458,7 +473,28 @@ export async function getVendorLedger(vendorId: string) {
     })
 
     groupedByReference.forEach(t => {
-      if (t.type === 'PURCHASE') {
+      // ✅ فحص دقيق: إذا كانت الحركة استرداد نقدي من المورد دخل الخزينة
+      const isCashRefundFromVendor = t.type === 'REFUND_IN' || 
+                                     t.type === 'RECEIPT' || 
+                                     (t.reference && t.reference.includes('استرداد')) ||
+                                     (t.description && t.description.includes('استرداد نقدي'));
+
+      if (isCashRefundFromVendor) {
+        // الاسترداد النقدي من المورد يجعل المورد (دائن / له) لأنه رد لنا نقدية
+        ledger.push({
+          id: t.id,
+          type: 'REFUND_IN',
+          date: t.date,
+          reference: t.reference || 'سند استرداد نقدي',
+          description: t.description || 'استرداد نقدي من المورد (وارد للخزينة)',
+          debit: 0,
+          credit: t.amount, // ✅ دائن وليس مدين
+          quantity: null,
+          user: t.user,
+          isFromProducts: false,
+        })
+      } else if (t.type === 'PURCHASE') {
+        // فاتورة مشتريات (دائن / له)
         ledger.push({
           id: t.id,
           type: 'PURCHASE',
@@ -472,6 +508,7 @@ export async function getVendorLedger(vendorId: string) {
           isFromProducts: false,
         })
       } else if (t.type === 'RETURN') {
+        // مرتجع بضاعة للمورد (مدين / خصم ما عليه)
         ledger.push({
           id: t.id,
           type: 'RETURN',
@@ -485,6 +522,7 @@ export async function getVendorLedger(vendorId: string) {
           isFromProducts: false,
         })
       } else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) {
+        // سداد نقدي للمورد (مدين / دفعنا له)
         ledger.push({
           id: t.id,
           type: 'PAYMENT',
@@ -501,7 +539,7 @@ export async function getVendorLedger(vendorId: string) {
       }
     })
 
-    // ج. التأكد من إدراج أي شيك من جدول Check لم يدرج مسبقاً
+    // ج. الشيكات
     const existingReferences = new Set(ledger.map(l => l.reference))
 
     checks.forEach(chk => {
@@ -532,7 +570,7 @@ export async function getVendorLedger(vendorId: string) {
       }
     })
 
-    // د. إضافة سندات الدفع النقدية مع منع التكرار
+    // د. سندات الصرف النقدية
     payments.forEach(p => {
       if (p.checkRefId || (p.description && p.description.includes('شيك #'))) {
         return
@@ -555,14 +593,13 @@ export async function getVendorLedger(vendorId: string) {
     // ترتيب السطور تاريخياً
     ledger.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
 
-    // حساب الرصيد التراكمي
+    // حساب الرصيد التراكمي الدقيق (دائن - مدين)
     let runningBalance = 0
     const ledgerWithBalance = ledger.map(t => {
       runningBalance += (Number(t.credit || 0) - Number(t.debit || 0))
       return { ...t, balance: runningBalance }
     })
 
-    // المجاميع الدقيقة
     const totalPurchasesFromProducts = productsTotal
     const totalPurchasesFromInvoices = ledger
       .filter(t => t.type === 'PURCHASE' && !t.isFromProducts)
@@ -701,12 +738,10 @@ export async function getVendorsPerformanceReport(startDateStr?: string, endDate
     if (startDateStr) dateFilter.gte = new Date(startDateStr + 'T00:00:00')
     if (endDateStr) dateFilter.lte = new Date(endDateStr + 'T23:59:59.999')
 
-    // 1. جلب الموردين المسجلين
     const vendors = await prisma.vendor.findMany({
       select: { id: true, name: true, code: true, phone: true }
     })
 
-    // 2. جلب بنود الأوردرات والمرتجعات مع المنتجات
     const orderItems = await prisma.orderItem.findMany({
       where: Object.keys(dateFilter).length > 0 ? {
         order: { createdAt: dateFilter }
@@ -733,7 +768,6 @@ export async function getVendorsPerformanceReport(startDateStr?: string, endDate
       }
     })
 
-    // خرائط لربط المبيعات بالموردين (بالـ ID أو بالاسم)
     const vendorById = new Map<string, any>()
     const vendorByName = new Map<string, any>()
 
@@ -751,7 +785,6 @@ export async function getVendorsPerformanceReport(startDateStr?: string, endDate
       vendorByName.set(v.name.trim().toLowerCase(), vData)
     })
 
-    // حصر مبيعات كل صنف ومورده
     orderItems.forEach(oi => {
       if (!oi.product) return
 
@@ -811,7 +844,6 @@ export async function getVendorsPerformanceReport(startDateStr?: string, endDate
       }
     })
 
-    // تجميع وتجهيز التقرير النهائي
     const allUniqueVendors = Array.from(new Set([...vendorById.values(), ...vendorByName.values()]))
 
     const sortedVendors = allUniqueVendors

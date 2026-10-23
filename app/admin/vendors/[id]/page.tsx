@@ -14,14 +14,12 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
   const [data, setData] = useState<any>(null)
   const [loading, setLoading] = useState(true)
 
-  // حالات الفلاتر الجديدة
   const [filter, setFilter] = useState<'ALL' | 'PURCHASE' | 'PAYMENT' | 'RETURN'>('ALL')
   const [searchTerm, setSearchTerm] = useState('')
   const [startDate, setStartDate] = useState('')
   const [endDate, setEndDate] = useState('')
   const [selectedSafe, setSelectedSafe] = useState('ALL')
   
-  // حالات مودال فاتورة الشراء اليدوية السريعة
   const [showInvoiceModal, setShowInvoiceModal] = useState(false)
   const [invoiceNo, setInvoiceNo] = useState('')
   const [invoiceAmount, setInvoiceAmount] = useState('')
@@ -74,12 +72,11 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
     }
   }
 
-  // حذف وإلغاء فاتورة مشتريات أو مرتجع مع عكس المخزون والخزنة
   const handleDeleteInvoice = async (reference: string, type: string) => {
     const isPurchase = type === 'PURCHASE'
     const confirmMsg = isPurchase
       ? `تحذير: سيتم حذف فاتورة المشتريات رقم (#${reference}).\nسيتم خصم الكميات المشتراة من المخزون وإلغاء أثر الخزنة ورصيد المورد.\nهل أنت متأكد؟`
-      : `تحذير: سيتم حذف مرتجع المشتريات رقم (#${reference}).\nسيتم إعادة الكميات المرتجعة إلى المخزون وإلغاء أثر الخزنة ورصيد المورد.\nهل أنت متأكد؟`
+      : `تحذير: سيتم حذف حركة رقم (#${reference}).\nسيتم إلغاء أثر الخزنة ورصيد المورد.\nهل أنت متأكد؟`
 
     if (!confirm(confirmMsg)) return
 
@@ -97,7 +94,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
 
   const { vendor, ledger = [], summary } = data || {}
 
-  // استخراج قائمة الخزن التي تمت عليها معاملات مع هذا المورد
   const availableSafes = useMemo(() => {
     if (!ledger || ledger.length === 0) return []
     const safesSet = new Set<string>()
@@ -109,24 +105,20 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
     return Array.from(safesSet).sort()
   }, [ledger])
 
-  // منطق التصفية الشامل (نوع، خزنة، تواريخ، بحث لايف)
   const filteredLedger = useMemo(() => {
     if (!ledger || ledger.length === 0) return []
 
     return ledger.filter((t: any) => {
-      // 1. فلتر نوع الحركة
       if (filter !== 'ALL' && t.type !== filter) {
         return false
       }
 
-      // 2. فلتر الخزنة
       if (selectedSafe !== 'ALL') {
         if (!t.safe || t.safe !== selectedSafe) {
           return false
         }
       }
 
-      // 3. فلتر التواريخ
       if (startDate) {
         const itemDate = new Date(t.date)
         const filterStart = new Date(startDate + 'T00:00:00')
@@ -139,7 +131,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         if (itemDate > filterEnd) return false
       }
 
-      // 4. بحث لايف فوري
       if (searchTerm.trim() !== '') {
         const query = searchTerm.toLowerCase().trim()
         const matchRef = t.reference?.toLowerCase().includes(query)
@@ -158,7 +149,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
     })
   }, [ledger, filter, selectedSafe, startDate, endDate, searchTerm])
 
-  // إعادة ضبط كل الفلاتر
   const handleResetFilters = () => {
     setFilter('ALL')
     setSelectedSafe('ALL')
@@ -298,10 +288,8 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         </button>
       </div>
 
-      {/* وحدة الفلترة المتقدمة (بحث لايف + تواريخ + خزنة) */}
+      {/* وحدة الفلترة المتقدمة */}
       <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 no-print space-y-3">
-        
-        {/* الصف الأول: البحث اللايف */}
         <div className="relative">
           <input
             type="text"
@@ -320,10 +308,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
           )}
         </div>
 
-        {/* الصف الثاني: فلاتر التواريخ والخزنة والنوع */}
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 items-end">
-          
-          {/* من تاريخ */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">من تاريخ:</label>
             <input
@@ -334,7 +319,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
             />
           </div>
 
-          {/* إلى تاريخ */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">إلى تاريخ:</label>
             <input
@@ -345,7 +329,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
             />
           </div>
 
-          {/* فلتر الخزنة */}
           <div>
             <label className="block text-xs font-bold text-gray-500 mb-1">🏦 الخزنة:</label>
             <select
@@ -360,7 +343,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
             </select>
           </div>
 
-          {/* زر إعادة التعيين */}
           <div>
             <button
               type="button"
@@ -372,10 +354,8 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
               <span>إعادة تعيين الفلاتر</span>
             </button>
           </div>
-
         </div>
 
-        {/* الصف الثالث: تبويبات نوع الحركة وأزرار التصفية السريعة */}
         <div className="flex flex-wrap justify-between items-center gap-2 pt-2 border-t border-gray-100">
           <div className="flex gap-1.5 flex-wrap">
             <button
@@ -416,17 +396,9 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
             الحركات المعروضة: <b className="text-purple-700">{filteredLedger.length}</b> من أصل {ledger.length}
           </div>
         </div>
-
       </div>
 
-      {/* عنوان وتاريخ الفترة عند الطباعة */}
-      {(startDate || endDate) && (
-        <div className="mb-2 text-xs font-bold text-gray-600 bg-gray-100 p-2 rounded">
-          فترة الكشف: {startDate ? `من ${startDate}` : ''} {endDate ? `إلى ${endDate}` : ''} {selectedSafe !== 'ALL' ? `| الخزنة: ${selectedSafe}` : ''}
-        </div>
-      )}
-
-      {/* جدول الحركات */}
+      {/* جدول الحركات بتسميات محاسبية سليمة 100% */}
       <div className="bg-white rounded-xl shadow overflow-x-auto">
         <table className="w-full text-right min-w-[900px]">
           <thead className="bg-gray-100">
@@ -434,8 +406,8 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
               <th className="p-3 text-xs font-bold w-28">التاريخ</th>
               <th className="p-3 text-xs font-bold w-52">المرجع / الفاتورة</th>
               <th className="p-3 text-xs font-bold">الوصف</th>
-              <th className="p-3 text-xs font-bold text-center w-28">مدين (له)</th>
-              <th className="p-3 text-xs font-bold text-center w-28">دائن (علينا)</th>
+              <th className="p-3 text-xs font-bold text-center w-28 text-red-700">مدين (سددنا له / عليه)</th>
+              <th className="p-3 text-xs font-bold text-center w-28 text-blue-700">دائن (له علينا)</th>
               <th className="p-3 text-xs font-bold text-center w-32">الرصيد</th>
               <th className="p-3 text-xs font-bold w-24">الموظف</th>
               <th className="p-3 text-xs font-bold text-center w-28 no-print bg-gray-200">تحكم</th>
@@ -475,7 +447,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
                       )}
                     </td>
 
-                    {/* المرجع والأزرار بجواره */}
                     <td className="p-3">
                       <div className="flex items-center gap-2">
                         <span className="font-bold text-sm font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
@@ -522,6 +493,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
                       )}
                     </td>
 
+                    {/* خانة مدين (سددنا له / عليه) */}
                     <td className="p-3 text-center">
                       {(Number(t.debit) || 0) > 0 ? (
                         <span className="font-bold text-red-600 font-mono">
@@ -532,6 +504,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
                       )}
                     </td>
 
+                    {/* خانة دائن (له علينا) */}
                     <td className="p-3 text-center">
                       {(Number(t.credit) || 0) > 0 ? (
                         <span className="font-bold text-blue-700 font-mono">
@@ -550,7 +523,6 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
 
                     <td className="p-3 text-sm text-gray-600">{t.user}</td>
                     
-                    {/* عمود تحكم بارز في أقصى اليسار */}
                     <td className="p-3 text-center no-print bg-gray-50/50">
                       {isInvoice ? (
                         <div className="flex justify-center items-center gap-1.5">
@@ -599,7 +571,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         </table>
       </div>
 
-      {/* مودال فاتورة الشراء السريعة */}
+      {/* Modal تسجيل فاتورة سريعة */}
       {showInvoiceModal && (
         <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4 no-print">
           <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl">

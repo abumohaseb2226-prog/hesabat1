@@ -30,7 +30,6 @@ export default function AdminDashboard() {
   const { data: session } = useSession()
   const [mounted, setMounted] = useState(false)
 
-  // القسم النشط (null = القائمة الرئيسية الستة)
   const [selectedCategoryId, setSelectedCategoryId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -38,10 +37,10 @@ export default function AdminDashboard() {
   }, [])
 
   // =========================================================================
-  // الهيكل الشامل مع تحديد لون البوردر الرفيع لكل قسم وعملية
+  // الهيكل الشامل للأقسام الـ 7 الرئيسية مع "إدارة المخازن" الجديدة
   // =========================================================================
   const categories: MainCategory[] = [
-    // 1. الموردون (بوردر برتقالي ذهبي)
+    // 1. الموردون
     {
       id: 'vendors',
       title: 'الموردون',
@@ -56,7 +55,7 @@ export default function AdminDashboard() {
       ]
     },
 
-    // 2. العملاء (بوردر أزرق سماوي)
+    // 2. العملاء
     {
       id: 'customers',
       title: 'العملاء',
@@ -75,7 +74,7 @@ export default function AdminDashboard() {
       ]
     },
 
-    // 3. الأصناف (بوردر بنفسجي أرجواني)
+    // 3. الأصناف
     {
       id: 'products',
       title: 'الأصناف',
@@ -91,7 +90,22 @@ export default function AdminDashboard() {
       ]
     },
 
-    // 4. النقدية والأوراق المالية (بوردر أخضر زمردي)
+    // 4. إدارة المخازن (الجديدة)
+    {
+      id: 'warehouses',
+      title: 'إدارة المخازن',
+      icon: '🏢',
+      borderColor: 'border-cyan-400',
+      glowColor: 'hover:shadow-[0_0_25px_rgba(34,211,238,0.25)]',
+      description: 'المخازن المتعددة، مناقلة البضاعة، وأرصدة الفروع',
+      items: [
+        { id: 'wh-list', title: 'قائمة المخازن والأرصدة', icon: '🏬', borderColor: 'border-cyan-400', glowColor: 'hover:shadow-[0_0_20px_rgba(34,211,238,0.25)]', href: '/admin/warehouses' },
+        { id: 'wh-transfer', title: 'تحويل ونقل بضاعة', icon: '🔄', borderColor: 'border-blue-400', glowColor: 'hover:shadow-[0_0_20px_rgba(96,165,250,0.25)]', href: '/admin/warehouses?tab=TRANSFER' },
+        { id: 'wh-logs', title: 'سجل المناقلات السابقة', icon: '📑', borderColor: 'border-amber-400', glowColor: 'hover:shadow-[0_0_20px_rgba(251,191,36,0.25)]', href: '/admin/warehouses?tab=LOGS' },
+      ]
+    },
+
+    // 5. النقدية والأوراق المالية
     {
       id: 'cash-finance',
       title: 'النقدية والأوراق المالية',
@@ -106,7 +120,7 @@ export default function AdminDashboard() {
       ]
     },
 
-    // 5. المستخدمين والموظفين (بوردر نيلي Indigo)
+    // 6. المستخدمين والموظفين
     {
       id: 'staff-users',
       title: 'المستخدمين والموظفين',
@@ -122,15 +136,16 @@ export default function AdminDashboard() {
       ]
     },
 
-    // 6. الحسابات (بوردر تركواز/Teal)
+    // 7. الحسابات
     {
       id: 'accounting',
       title: 'الحسابات',
       icon: '📈',
       borderColor: 'border-teal-400',
       glowColor: 'hover:shadow-[0_0_25px_rgba(45,212,191,0.25)]',
-      description: 'القوائم المالية والمركز المالي والدائنون والأصول',
+      description: 'القوائم المالية والمركز المالي والدائنون والأصول والقيود',
       items: [
+        { id: 'acc-journal', title: 'قيود اليومية العامة', icon: '⚖️', borderColor: 'border-amber-400', glowColor: 'hover:shadow-[0_0_20px_rgba(251,191,36,0.25)]', href: '/admin/journal-entries' },
         { id: 'acc-financial', title: 'القوائم المالية والأرباح (P&L)', icon: '📊', borderColor: 'border-emerald-400', glowColor: 'hover:shadow-[0_0_20px_rgba(52,211,153,0.25)]', href: '/admin/reports/financial' },
         { id: 'acc-debtors', title: 'الدائنون والمدينون (قروض)', icon: '🤝', borderColor: 'border-indigo-400', glowColor: 'hover:shadow-[0_0_20px_rgba(129,140,248,0.25)]', href: '/admin/debtors-creditors' },
         { id: 'acc-assets', title: 'الأصول الثابتة الرأسمالية', icon: '🏭', borderColor: 'border-cyan-400', glowColor: 'hover:shadow-[0_0_20px_rgba(34,211,238,0.25)]', href: '/admin/assets' },
@@ -194,10 +209,8 @@ export default function AdminDashboard() {
         </div>
       </header>
 
-      {/* المحتوى الرئيسي */}
+      {/* Main content */}
       <main className="w-full px-4 md:px-8 py-8 md:py-12">
-        
-        {/* عنوان اللوحة والشريط الإرشادي */}
         <div className="text-center mb-8">
           <h1 className="text-3xl md:text-5xl font-black text-white mb-2 transition-all">
             {currentCategory ? currentCategory.title : 'لوحة التحكم المحاسبية والإدارية'}
@@ -206,7 +219,6 @@ export default function AdminDashboard() {
             {currentCategory ? currentCategory.description : 'اضغط على أي قسم لعرض العمليات والتقارير المندرجة تحته'}
           </p>
 
-          {/* مسار التنقل (Breadcrumb) */}
           {currentCategory && (
             <div className="mt-4 inline-flex items-center gap-2 bg-slate-800/60 backdrop-blur-md border border-slate-700 px-4 py-1.5 rounded-full text-xs font-bold">
               <button 
@@ -221,12 +233,9 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/* ========================================================================= */}
-        {/* عرض الديسكتوب: دوائر زجاجية شفافة محاطة ببوردر رفيع بلون مميز */}
-        {/* ========================================================================= */}
+        {/* عرض الديسكتوب المحيطي التفاعلي مع 7 أقسام */}
         <div className="hidden md:block relative mx-auto" style={{ height: '700px', maxWidth: '850px' }}>
           
-          {/* الدائرة المركزية الكبرى (زجاجية ومحاطة ببوردر رفيع متناسق) */}
           <div 
             className="absolute top-1/2 left-1/2 z-20"
             style={{ transform: 'translate(-50%, -50%)' }}
@@ -260,7 +269,6 @@ export default function AdminDashboard() {
             </button>
           </div>
 
-          {/* الدوائر المحيطية: خلفية زجاجية شفافة وبوردر رفيع ملون */}
           {displayItems.map((item: any, index: number) => {
             const total = displayItems.length
             const angle = (index * (360 / total) - 90) * (Math.PI / 180)
@@ -328,9 +336,7 @@ export default function AdminDashboard() {
           })}
         </div>
 
-        {/* ========================================================= */}
-        {/* عرض الموبايل: كروت زجاجية شفافة محاطة ببوردر رفيع ملون */}
-        {/* ========================================================= */}
+        {/* عرض الموبايل */}
         <div className="md:hidden space-y-4 max-w-lg mx-auto">
           {currentCategory && (
             <button
@@ -338,7 +344,7 @@ export default function AdminDashboard() {
               className="w-full bg-slate-900/70 backdrop-blur-md text-amber-300 p-3 rounded-2xl font-black text-xs shadow border border-amber-400/50 flex items-center justify-center gap-2 mb-2"
             >
               <span>↺</span>
-              <span>العودة للأقسام الرئيسية الستة</span>
+              <span>العودة للأقسام الرئيسية</span>
             </button>
           )}
 

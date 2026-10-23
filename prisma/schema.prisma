@@ -12,9 +12,9 @@ datasource db {
 // ==================== Enums ====================
 
 enum ReturnType {
-  FULL        // مرتجع كامل
-  PARTIAL     // مرتجع جزئي
-  EXCHANGE    // استبدال
+  FULL        
+  PARTIAL     
+  EXCHANGE    
 }
 
 enum ReturnStatus {
@@ -23,7 +23,7 @@ enum ReturnStatus {
   CANCELLED
 }
 
-// ==================== Models الأساسية ====================
+// ==================== Models ====================
 
 model User {
   id                  String                @id @default(cuid())
@@ -43,6 +43,8 @@ model User {
   checks              Check[]
   accountTransactions AccountTransaction[]
   fixedAssets         FixedAsset[]
+  journalEntries      JournalEntry[]
+  stockTransfers      StockTransfer[]
 }
 
 model Customer {
@@ -57,10 +59,6 @@ model Customer {
   payments  Payment[]
   checks    Check[]
 }
-
-// =======================================
-// نموذج الموردين
-// =======================================
 
 model Vendor {
   id          String   @id @default(cuid())
@@ -84,19 +82,15 @@ model Vendor {
   updatedAt   DateTime @updatedAt
 }
 
-// =======================================
-// حركات المورد - دفتر الأستاذ
-// =======================================
-
 model VendorTransaction {
   id          String   @id @default(cuid())
   vendorId    String
   vendor      Vendor   @relation(fields: [vendorId], references: [id])
   
-  type        String   // PURCHASE, PAYMENT, RETURN, CHECK_PAYABLE, CHECK_RECEIVABLE
+  type        String   
   amount      Float
   description String?
-  reference   String?  // رقم الفاتورة أو رقم الشيك
+  reference   String?  
   
   productId   String?
   product     Product? @relation(fields: [productId], references: [id])
@@ -133,6 +127,8 @@ model Product {
   vendorTransactions VendorTransaction[]
   purchaseInvoiceItems PurchaseInvoiceItem[]
   inventoryAuditItems  InventoryAuditItem[]
+  warehouseStocks      WarehouseStock[]
+  transferItems        StockTransferItem[]
 
   @@unique([modelNo, color])
 }
@@ -152,8 +148,6 @@ model Safe {
   
   employeeTransactions EmployeeTransaction[]
 }
-
-// ==================== الأوردرات ====================
 
 model Order {
   id          String      @id @default(cuid())
@@ -203,8 +197,6 @@ model FulfillmentLog {
   createdAt   DateTime  @default(now())
 }
 
-// ==================== المدفوعات ====================
-
 model Payment {
   id           String   @id @default(cuid())
   receiptNo    Int      @default(autoincrement())
@@ -232,8 +224,6 @@ model Payment {
 
   checkRefId   String?
 }
-
-// ==================== نظام المرتجعات ====================
 
 model ReturnOrder {
   id                String        @id @default(cuid())
@@ -286,8 +276,6 @@ model ReturnItem {
   exchangedPrice      Float         @default(0)
 }
 
-// ==================== المخزن ====================
-
 model WarehouseReceipt {
   uniqueid String   @id             
   date     DateTime                 
@@ -325,8 +313,6 @@ model Job {
   @@index([type, status])
 }
 
-// ==================== Product Sync ====================
-
 model SyncOperation {
   id          String       @id @default(cuid())
   createdAt   DateTime     @default(now())
@@ -350,8 +336,6 @@ model SyncRecord {
   @@index([syncOperationId])
 }
 
-// ==================== Warehouse Sync ====================
-
 model WarehouseSyncOperation {
   id          String       @id @default(cuid())
   createdAt   DateTime     @default(now())
@@ -370,8 +354,6 @@ model WarehouseSyncRecord {
 
   @@index([syncOperationId])
 }
-
-// ==================== الموظفين والرواتب ====================
 
 model Employee {
   id            String   @id @default(cuid())
@@ -401,8 +383,6 @@ model EmployeeTransaction {
   transactionDate DateTime @default(now())
   createdAt       DateTime @default(now())
 }
-
-// ==================== نظام فواتير المشتريات المخصص ====================
 
 model PurchaseInvoice {
   id            String                @id @default(cuid())
@@ -451,8 +431,6 @@ model PurchaseInvoiceItem {
   @@index([productId])
 }
 
-// ==================== نظام الجرد والمطابقة الفعلي ====================
-
 model InventoryAudit {
   id             String               @id @default(cuid())
   auditNo        Int                  @default(autoincrement())
@@ -493,8 +471,6 @@ model InventoryAuditItem {
   @@index([productId])
 }
 
-// ==================== نظام الأوراق المالية، الشيكات، والحسابات البنكية ====================
-
 model BankAccount {
   id            String            @id @default(cuid())
   bankName      String
@@ -517,8 +493,8 @@ model BankAccount {
 model Check {
   id              String       @id @default(cuid())
   checkNo         String
-  type            String       // 'RECEIVABLE', 'PAYABLE'
-  status          String       @default("PORTFOLIO") // PORTFOLIO, COLLECTED, BOUNCED, CANCELLED
+  type            String       
+  status          String       @default("PORTFOLIO") 
 
   amount          Float
   currency        String       @default("EGP")
@@ -530,7 +506,7 @@ model Check {
   bouncedReason   String?
   notes           String?
 
-  partyType       String       // 'CUSTOMER' | 'VENDOR'
+  partyType       String       
   customerId      String?
   customer        Customer?    @relation(fields: [customerId], references: [id])
   vendorId        String?
@@ -562,7 +538,7 @@ model BankTransaction {
   bankAccountId String
   bankAccount   BankAccount  @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
   
-  type          String       // DEPOSIT, WITHDRAWAL, SETTLEMENT
+  type          String       
   amount        Float
   description   String?
   reference     String?
@@ -577,23 +553,15 @@ model BankTransaction {
   @@index([type])
 }
 
-// =========================================================================
-// ✅ نظام حسابات الدائنون والمدينون المتنوعون (جديد)
-// (السلف، القروض، العهد، جاري الشركاء، أطراف خارجية)
-// =========================================================================
-
 model OtherAccount {
   id          String   @id @default(cuid())
   name        String
   code        String   @unique
   phone       String?
   type        String   @default("CREDITOR") 
-  // CREDITOR = دائن (قرض/سلفة لنا عنده مديونية أو له علينا فلوس)
-  // DEBTOR   = مدين (شخص عليه فلوس أو عهدة نطالبه بها)
-  // PARTNER  = جاري شريك (سحب أو ضخ أموال)
 
   notes       String?
-  balance     Float    @default(0) // رصيد الحساب الدفتري التراكمي (+ دائن له / - مدين عليه)
+  balance     Float    @default(0) 
 
   transactions AccountTransaction[]
   fixedAssets  FixedAsset[]
@@ -611,23 +579,16 @@ model AccountTransaction {
   account         OtherAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   type            String        
-  // LOAN_IN (استلام سلفة/قرض -> زيادة نقدية وزيادة دائنية الشخص)
-  // LOAN_OUT (سداد سلفة/قرض -> خروج نقدية وتخفيض دائنية الشخص)
-  // DIRECT_VENDOR_SETTLEMENT (سداد مباشر لمورد من القرض دون المرور بالخزنة)
-  // ADJUSTMENT (تسوية رصيد)
-
   amount          Float
   description     String?
   reference       String?
 
-  // قنوات النقدية إن وجدت
   safeId          String?
   safe            Safe?         @relation(fields: [safeId], references: [id])
   
   bankAccountId   String?
   bankAccount     BankAccount?  @relation(fields: [bankAccountId], references: [id])
 
-  // في حال تم استخدام القرض لسداد مورد مباشرة
   vendorId        String?
   vendor          Vendor?       @relation(fields: [vendorId], references: [id])
 
@@ -641,27 +602,22 @@ model AccountTransaction {
   @@index([type])
 }
 
-// =========================================================================
-// ✅ نظام الأصول الثابتة الرأسمالية (جديد)
-// (ماكينات، سيارات، أجهزة إلكترونية، أثاث وديكورات)
-// =========================================================================
-
 model FixedAsset {
   id                String        @id @default(cuid())
   assetCode         String        @unique
-  name              String        // اسم الأصل (ماكينة جوكي، سيارة جامبو، كمبيوتر كاشير...)
-  category          String        // آلات ومعدات، سيارات، أجهزة إلكترونية، أثاث وتجهيزات...
+  name              String        
+  category          String        
   
   purchaseDate      DateTime      @default(now())
-  purchaseCost      Float         // تكلفة الشراء الأساسية
-  currentValue      Float         // القيمة الدفترية الحالية
-  depreciationRate  Float         @default(0) // نسبة الإهلاك السنوية %
+  purchaseCost      Float         
+  currentValue      Float         
+  depreciationRate  Float         @default(0) 
 
-  status            String        @default("ACTIVE") // ACTIVE (يعمل)، MAINTENANCE (صيانة)، RETIRED (مكهن)، SOLD (تم بيعه)
-  location          String?       // مقر الأصل (المصنع، المعرض، المخزن...)
+  status            String        @default("ACTIVE") 
+  location          String?       
   notes             String?
 
-  paymentMethod     String        // CASH_SAFE (نقدي خزنة), BANK (تحويل بنكي), DEBTOR_CREDIT (قرض من دائن), VENDOR_CREDIT (آجل مورد)
+  paymentMethod     String        
   
   safeId            String?
   safe              Safe?         @relation(fields: [safeId], references: [id])
@@ -684,4 +640,138 @@ model FixedAsset {
   @@index([assetCode])
   @@index([category])
   @@index([status])
+}
+
+model JournalEntry {
+  id          String             @id @default(cuid())
+  entryNo     Int                @default(autoincrement())
+  date        DateTime           @default(now())
+  description String
+  reference   String?
+  totalAmount Float              @default(0)
+
+  userId      String
+  user        User               @relation(fields: [userId], references: [id])
+
+  lines       JournalEntryLine[]
+
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([entryNo])
+  @@index([date])
+}
+
+model JournalEntryLine {
+  id          String       @id @default(cuid())
+  entryId     String
+  entry       JournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  accountType String       
+  accountId   String?
+  accountName String
+  debit       Float        @default(0)
+  credit      Float        @default(0)
+  notes       String?
+
+  @@index([entryId])
+  @@index([accountType])
+}
+
+model ChartAccount {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  type        String   @default("DEBIT") 
+  category    String   
+  parentCode  String?
+  balance     Float    @default(0)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([code])
+  @@index([parentCode])
+  @@index([category])
+}
+
+// =========================================================================
+// ✅ نظام إدارة المخازن المتعددة والمناقلات (Warehouse Management System)
+// =========================================================================
+
+model Warehouse {
+  id             String             @id @default(cuid())
+  name           String             @unique
+  code           String             @unique
+  location       String?
+  isDefault      Boolean            @default(false)
+  
+  stocks         WarehouseStock[]
+  transfersFrom  StockTransfer[]    @relation("TransferSource")
+  transfersTo    StockTransfer[]    @relation("TransferDestination")
+
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([code])
+}
+
+model WarehouseStock {
+  id             String      @id @default(cuid())
+  warehouseId    String
+  warehouse      Warehouse   @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  productId      String
+  product        Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  quantity       Int         @default(0)
+
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@unique([warehouseId, productId])
+  @@index([warehouseId])
+  @@index([productId])
+}
+
+model StockTransfer {
+  id              String             @id @default(cuid())
+  transferNo      Int                @default(autoincrement())
+  
+  fromWarehouseId String
+  fromWarehouse   Warehouse          @relation("TransferSource", fields: [fromWarehouseId], references: [id])
+
+  toWarehouseId   String
+  toWarehouse     Warehouse          @relation("TransferDestination", fields: [toWarehouseId], references: [id])
+
+  date            DateTime           @default(now())
+  notes           String?
+
+  userId          String
+  user            User               @relation(fields: [userId], references: [id])
+
+  items           StockTransferItem[]
+
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([transferNo])
+  @@index([fromWarehouseId])
+  @@index([toWarehouseId])
+}
+
+model StockTransferItem {
+  id          String        @id @default(cuid())
+  transferId  String
+  transfer    StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+
+  productId   String
+  product     Product       @relation(fields: [productId], references: [id])
+
+  quantity    Int
+
+  createdAt   DateTime      @default(now())
+
+  @@index([transferId])
+  @@index([productId])
 }

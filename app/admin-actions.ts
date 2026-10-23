@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import bcrypt from 'bcryptjs'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/auth'
+import { syncPaymentToHrApp } from '@/lib/hr-sync'
 
 const prisma = new PrismaClient()
 
@@ -234,7 +235,6 @@ export async function updateInitialStockBulk(items: { modelNo: string; color: st
   }
 }
 
-// ✅ دالة تصفير الرصيد الأولي للأصناف المحددة (stockQty = 0 مع بقاء currentStock دون تغيير)
 export async function resetInitialStockBulk(ids: string[]) {
   try {
     if (!ids || ids.length === 0) {
@@ -893,24 +893,20 @@ export async function updateOrderDate(orderId: string, newDateStr: string) {
       return { success: false, error: 'تنسيق التاريخ غير صحيح' }
     }
 
-    // الحفاظ على وقت الأوردر الأصلي (الساعة والدقائق) وتغيير اليوم والشهر والسنة فقط
     const targetDate = new Date(order.createdAt)
     targetDate.setFullYear(year, month - 1, day)
 
     await prisma.$transaction(async (tx) => {
-      // 1. تحديث تاريخ الأوردر الأساسي
       await tx.order.update({
         where: { id: orderId },
         data: { createdAt: targetDate }
       })
 
-      // 2. تحديث سجلات تسليم الأصناف المرتبطة
       await tx.fulfillmentLog.updateMany({
         where: { orderItem: { orderId: orderId } },
         data: { createdAt: targetDate }
       })
 
-      // 3. تحديث تاريخ دفعات الخزينة والعربون المرتبطة بهذا الأوردر لضمان دقة التقارير
       await tx.payment.updateMany({
         where: {
           OR: [
@@ -934,5 +930,252 @@ export async function updateOrderDate(orderId: string, newDateStr: string) {
   } catch (error: any) {
     console.error('Error updating order date:', error)
     return { success: false, error: error.message || 'فشل تحديث تاريخ الأوردر' }
+  }
+}
+
+// =========================================================================
+// 7. دالة السندات الموحدة (قبض وصرف للعميل، المورد، الموظف، المصروفات)
+// =========================================================================
+
+export async function recordUnifiedPayment(payload: {
+  type: 'IN' | 'OUT' | 'TRANSFER'
+  partyType: 'CUSTOMER' | 'VENDOR' | 'EMPLOYEE' | 'EXPENSE'
+  partyId?: string
+  partyName?: string
+  amount: number
+  currency?: string
+  safeId: string
+  targetSafeId?: string
+  description?: string
+  date: string
+}, userSessionId?: string) {
+  try {
+    let activeUserId = userSessionId
+    if (!activeUserId) {
+      const session = await getServerSession(authOptions)
+      activeUserId = session?.user?.image as string
+    }
+
+    if (!activeUserId) {
+      return { success: false, error: 'يرجى تسجيل الدخول أولاً' }
+    }
+
+    const transAmount = Math.abs(Number(payload.amount))
+    if (isNaN(transAmount) || transAmount <= 0) {
+      return { success: false, error: 'المبلغ يجب أن يكون أكبر من الصفر' }
+    }
+
+    if (!payload.safeId) {
+      return { success: false, error: 'يرجى اختيار الخزنة' }
+    }
+
+    const transDate = payload.date ? new Date(payload.date + 'T12:00:00') : new Date()
+
+    // 1. تحويل بين الخزنات
+    if (payload.type === 'TRANSFER') {
+      if (!payload.targetSafeId || payload.safeId === payload.targetSafeId) {
+        return { success: false, error: 'يرجى اختيار خزنة مستهدفة مختلفة للتحويل' }
+      }
+
+      await prisma.payment.create({
+        data: {
+          type: 'TRANSFER',
+          amount: transAmount,
+          currency: payload.currency || 'EGP',
+          safeId: payload.safeId,
+          targetSafeId: payload.targetSafeId,
+          description: payload.description || 'تحويل بين الخزن',
+          userId: activeUserId,
+          createdAt: transDate
+        }
+      })
+
+      revalidatePath('/payments/new')
+      revalidatePath('/admin/cash-management')
+      revalidatePath('/admin/reports')
+
+      return { success: true, message: `تم تسجيل تحويل مبلغ ${transAmount.toLocaleString()} ج.م بين الخزن بنجاح` }
+    }
+
+    // 2. معالجة سند المصروفات العامة (EXPENSE)
+    if (payload.partyType === 'EXPENSE') {
+      await prisma.payment.create({
+        data: {
+          type: 'OUT',
+          amount: transAmount,
+          currency: payload.currency || 'EGP',
+          safeId: payload.safeId,
+          description: payload.description || 'مصروفات عامة ونثريات',
+          userId: activeUserId,
+          createdAt: transDate
+        }
+      })
+
+      revalidatePath('/payments/new')
+      revalidatePath('/admin/cash-management')
+      revalidatePath('/admin/reports')
+
+      return { success: true, message: `تم تسجيل سند صرف مصروفات بمبلغ ${transAmount.toLocaleString()} ج.م بنجاح` }
+    }
+
+    // 3. معالجة العميل (CUSTOMER) - قبض أو صرف
+    if (payload.partyType === 'CUSTOMER') {
+      if (!payload.partyId) return { success: false, error: 'يرجى تحديد العميل' }
+
+      const customer = await prisma.customer.findUnique({ where: { id: payload.partyId } })
+      if (!customer) return { success: false, error: 'العميل غير موجود' }
+
+      const isReceipt = payload.type === 'IN'
+      const desc = payload.description || (isReceipt ? `تحصيل نقدي من العميل: ${customer.name}` : `صرف / استرداد نقدي للعميل: ${customer.name}`)
+
+      await prisma.payment.create({
+        data: {
+          type: isReceipt ? 'IN' : 'OUT',
+          amount: transAmount,
+          currency: payload.currency || 'EGP',
+          safeId: payload.safeId,
+          customerId: customer.id,
+          description: desc,
+          userId: activeUserId,
+          createdAt: transDate
+        }
+      })
+
+      revalidatePath('/payments/new')
+      revalidatePath('/admin/cash-management')
+      revalidatePath('/admin/customers')
+      revalidatePath(`/admin/reports/customer/${customer.id}`)
+      revalidatePath('/admin/reports')
+
+      return {
+        success: true,
+        message: isReceipt 
+          ? `تم بنجاح تحصيل مبلغ ${transAmount.toLocaleString()} ج.م وتخفيض مديونية العميل (${customer.name})`
+          : `تم بنجاح صرف مبلغ ${transAmount.toLocaleString()} ج.م للعميل (${customer.name})`
+      }
+    }
+
+    // 4. معالجة المورد (VENDOR) - قبض أو دفع
+    if (payload.partyType === 'VENDOR') {
+      if (!payload.partyId) return { success: false, error: 'يرجى تحديد المورد' }
+
+      const vendor = await prisma.vendor.findUnique({ where: { id: payload.partyId } })
+      if (!vendor) return { success: false, error: 'المورد غير موجود' }
+
+      const isPayout = payload.type === 'OUT'
+      const desc = payload.description || (isPayout ? `سداد نقدي للمورد: ${vendor.name}` : `استرداد نقدي من المورد: ${vendor.name}`)
+
+      await prisma.$transaction(async (tx) => {
+        // حركة الخزنة
+        await tx.payment.create({
+          data: {
+            type: isPayout ? 'OUT' : 'IN',
+            amount: transAmount,
+            currency: payload.currency || 'EGP',
+            safeId: payload.safeId,
+            vendorId: vendor.id,
+            description: desc,
+            userId: activeUserId,
+            createdAt: transDate
+          }
+        })
+
+        // سطر كشف حساب المورد المالي (VendorTransaction)
+        await tx.vendorTransaction.create({
+          data: {
+            vendorId: vendor.id,
+            type: isPayout ? 'PAYMENT' : 'RETURN',
+            amount: transAmount,
+            reference: isPayout ? 'سند دفع للمورد' : 'سند استرداد من مورد',
+            description: desc,
+            userId: activeUserId,
+            createdAt: transDate
+          }
+        })
+      })
+
+      revalidatePath('/payments/new')
+      revalidatePath('/admin/cash-management')
+      revalidatePath('/admin/vendors')
+      revalidatePath(`/admin/vendors/${vendor.id}`)
+      revalidatePath('/admin/reports')
+
+      return {
+        success: true,
+        message: isPayout
+          ? `تم بنجاح سداد مبلغ ${transAmount.toLocaleString()} ج.م وتخفيض مستحقات المورد (${vendor.name})`
+          : `تم بنجاح استلام مبلغ ${transAmount.toLocaleString()} ج.م من المورد (${vendor.name}) وقيدها في كشف حسابه والخزنة`
+      }
+    }
+
+    // 5. معالجة الموظف (EMPLOYEE) - صرف سلفة/راتب أو استلام سداد سلفة
+    if (payload.partyType === 'EMPLOYEE') {
+      if (!payload.partyId) return { success: false, error: 'يرجى تحديد الموظف' }
+
+      const employee = await prisma.employee.findUnique({ where: { id: payload.partyId } })
+      if (!employee) return { success: false, error: 'الموظف غير موجود' }
+
+      const isPayout = payload.type === 'OUT'
+      const desc = payload.description || (isPayout ? `سلفة / صرف نقدي للموظف: ${employee.name}` : `سداد سلفة / توريد نقدية من الموظف: ${employee.name}`)
+
+      await prisma.$transaction(async (tx) => {
+        // حركة الخزنة
+        await tx.payment.create({
+          data: {
+            type: isPayout ? 'OUT' : 'IN',
+            amount: transAmount,
+            currency: payload.currency || 'EGP',
+            safeId: payload.safeId,
+            description: desc,
+            userId: activeUserId,
+            createdAt: transDate
+          }
+        })
+
+        // حركة كشف حساب الموظف (سالب للمسحوبات وموجب للمستحقات/السداد)
+        await tx.employeeTransaction.create({
+          data: {
+            employeeId: employee.id,
+            amount: isPayout ? -transAmount : transAmount,
+            description: desc,
+            safeId: payload.safeId,
+            createdById: activeUserId,
+            transactionDate: transDate
+          }
+        })
+      })
+
+      // ترحيل مباشر إلى تطبيق الحضور والانصراف (amrhh) في حالة الصرف
+      if (isPayout) {
+        try {
+          await syncPaymentToHrApp({
+            employeeName: employee.name,
+            amount: transAmount,
+            description: desc,
+            date: transDate
+          })
+        } catch (hrErr) {
+          console.warn('تنبيه: تعذر مزامنة الحركة فورياً مع تطبيق الحضور:', hrErr)
+        }
+      }
+
+      revalidatePath('/payments/new')
+      revalidatePath('/admin/cash-management')
+      revalidatePath('/admin/employees')
+      revalidatePath(`/admin/employees/${employee.id}/ledger`)
+      revalidatePath('/admin/reports')
+
+      return {
+        success: true,
+        message: isPayout
+          ? `تم بنجاح صرف مبلغ ${transAmount.toLocaleString()} ج.م للموظف (${employee.name}) وتثبيتها في كشف حسابه`
+          : `تم بنجاح استلام مبلغ ${transAmount.toLocaleString()} ج.م من الموظف (${employee.name}) وتخفيض مديونية السلفة في كشف حسابه`
+      }
+    }
+
+    return { success: false, error: 'نوع العملية غير معروف' }
+  } catch (error: any) {
+    console.error('Error in recordUnifiedPayment:', error)
+    return { success: false, error: error.message || 'فشلت معالجة الحركة النقدية' }
   }
 }

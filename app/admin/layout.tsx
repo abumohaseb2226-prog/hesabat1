@@ -6,7 +6,6 @@ import { authOptions } from "@/auth";
 import NotificationBell from "./NotificationBell";
 import { 
   HomeIcon, 
-  UsersIcon, 
   UserGroupIcon, 
   ArchiveBoxIcon, 
   ChartBarIcon, 
@@ -19,7 +18,8 @@ import {
   DocumentDuplicateIcon,
   CreditCardIcon,
   BuildingOffice2Icon,
-  ChartPieIcon
+  ChartPieIcon,
+  BookOpenIcon
 } from '@heroicons/react/24/outline';
 
 const prisma = new PrismaClient();
@@ -39,7 +39,6 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     redirect("/");
   }
 
-  // حماية مشددة: مسموح فقط للمدير وصاحب العمل والمحاسب
   const allowedRoles = ["ADMIN", "OWNER", "ACCOUNTANT"];
   if (!allowedRoles.includes(user.role)) {
     redirect("/");
@@ -65,7 +64,12 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               <HomeIcon className="w-5 h-5" /> <span className="hidden lg:inline">الرئيسية</span>
             </Link>
             
-            {/* القوائم المالية والأرباح (جديد) */}
+            {/* زر قيود اليومية المباشر في النافبار */}
+            <Link href="/admin/journal-entries" className="px-3 py-2 rounded-xl bg-amber-600/30 text-amber-300 hover:bg-amber-600 hover:text-white transition-colors flex items-center gap-2 border border-amber-500/40">
+              <BookOpenIcon className="w-5 h-5" /> <span className="hidden lg:inline">قيود اليومية</span>
+            </Link>
+
+            {/* القوائم المالية والأرباح وشجرة الحسابات والتدفقات */}
             <Link href="/admin/reports/financial" className="px-3 py-2 rounded-xl bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600 hover:text-white transition-colors flex items-center gap-2 border border-emerald-500/40">
               <ChartPieIcon className="w-5 h-5" /> <span className="hidden lg:inline">القوائم المالية</span>
             </Link>
