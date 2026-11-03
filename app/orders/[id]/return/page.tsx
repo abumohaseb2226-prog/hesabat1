@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, use } from 'react';
 import { getOrderById, getSafes, createReturnOrder, searchProducts } from '@/app/actions';
+import { getWarehouses } from '@/app/warehouse-management-actions';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import Link from 'next/link';
@@ -14,6 +15,8 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [safes, setSafes] = useState<any[]>([]);
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('');
   const [printAfterSave, setPrintAfterSave] = useState(false);
 
   // نوع المرتجع
@@ -30,7 +33,7 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
   const [refundMethod, setRefundMethod] = useState<'CASH' | 'CREDIT' | 'DEDUCT_FROM_NEXT'>('CASH');
   const [selectedSafeId, setSelectedSafeId] = useState('');
 
-  // حقول الاستبدال - مع حفظ السعر
+  // حقول الاستبدال
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [exchangeProducts, setExchangeProducts] = useState<{[key: string]: {
@@ -45,14 +48,27 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
     Promise.all([
       getOrderById(id),
       getSafes(),
-    ]).then(([orderData, safesData]) => {
+      getWarehouses(),
+    ]).then(([orderData, safesData, resWh]) => {
       if (!orderData) {
         router.push('/orders/list');
         return;
       }
       setOrder(orderData);
-      setSafes(safesData);
-      if (safesData.length > 0) {
+      setSafes(safesData || []);
+      
+      if (resWh?.success && resWh.warehouses) {
+        setWarehouses(resWh.warehouses);
+        // تعيين مخزن الأوردر الأصلي أو المخزن الرئيسي افتراضياً
+        if (orderData.warehouseId) {
+          setSelectedWarehouseId(orderData.warehouseId);
+        } else {
+          const defaultWh = resWh.warehouses.find((w: any) => w.isDefault) || resWh.warehouses[0];
+          if (defaultWh) setSelectedWarehouseId(defaultWh.id);
+        }
+      }
+
+      if (safesData && safesData.length > 0) {
         const mainSafe = safesData.find((s: any) => s.name === 'الخزنة الرئيسية');
         setSelectedSafeId(mainSafe?.id || safesData[0].id);
       }
@@ -141,7 +157,6 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
       totalRefund += data.quantity * orderItem.price;
     });
 
-    // نستخدم السعر المحفوظ مباشرة
     Object.entries(exchangeProducts).forEach(([productId, data]) => {
       totalExchangeValue += data.quantity * data.price;
     });
@@ -160,6 +175,11 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
       return;
     }
 
+    if (!selectedWarehouseId) {
+      alert('يرجى تحديد المخزن المستلم للبضاعة المرتجعة');
+      return;
+    }
+
     if (refundMethod === 'CASH' && !selectedSafeId) {
       alert('اختر الخزنة للاسترداد');
       return;
@@ -172,7 +192,6 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
 
     setIsSaving(true);
 
-    // ✅ الأصناف المرتجعة
     const items = Object.entries(selectedItems).map(([itemId, data]) => {
       const orderItem = order.items.find((i: any) => i.id === itemId);
       
@@ -185,7 +204,6 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
       };
     });
 
-    // ✅ الأصناف البديلة (array منفصل)
     const exchangeItems = Object.entries(exchangeProducts).map(([productId, data]) => ({
       productId,
       quantity: data.quantity,
@@ -199,12 +217,13 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
       type: returnType,
       reason,
       items,
-      exchangeItems,  // ✅ نبعته منفصل
+      exchangeItems,
       totalRefund: returnType === 'EXCHANGE' ? 0 : calculatedRefund,
       depositRefunded: 0,
       exchangeAmount: returnType === 'EXCHANGE' ? calculatedExchange : 0,
       refundMethod: returnType === 'EXCHANGE' ? 'CREDIT' : refundMethod,
       safeId: selectedSafeId,
+      warehouseId: selectedWarehouseId, // 👈 تمرير المخزن المستلم للبضاعة
       notes: returnType === 'EXCHANGE' 
         ? `${notes || ''}\nاستبدال بـ: ${Object.values(exchangeProducts).map((p: any) => `${p.modelNo} (${p.color})`).join(', ')}`
         : notes,
@@ -213,10 +232,9 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
     setIsSaving(false);
 
     if (result.success) {
-      alert('✅ تم إنشاء المرتجع بنجاح');
+      alert('✅ تم إنشاء المرتجع وإرجاع البضاعة للمخزن بنجاح');
       
       if (printAfterSave) {
-        // نروح صفحة المرتجعات ونطبع
         localStorage.setItem('printReturnId', result.data.id);
         localStorage.setItem('printReturn', 'true');
         router.push('/admin/returns');
@@ -254,6 +272,26 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
               <div className="text-xs text-gray-500">{new Date(order.createdAt).toLocaleDateString('ar-EG')}</div>
             </div>
           </div>
+        </div>
+
+        {/* 🏢 اختيار المخزن المستلم للبضاعة المرتجعة */}
+        <div className="bg-white p-4 rounded-xl shadow-sm border-2 border-cyan-200">
+          <label className="block text-xs font-bold text-cyan-800 mb-1.5 flex items-center justify-between">
+            <span>🏢 المخزن المستلم للبضاعة المرتجعة *</span>
+            <span className="text-[10px] text-gray-400 font-normal">الافتراضي: {order.warehouseId ? 'مخزن الأوردر الأصلي' : 'المخزن الرئيسي'}</span>
+          </label>
+          <select
+            value={selectedWarehouseId}
+            onChange={(e) => setSelectedWarehouseId(e.target.value)}
+            className="w-full p-3 border-2 border-cyan-400 rounded-xl font-bold text-gray-800 bg-cyan-50/30 outline-none focus:border-cyan-500 transition"
+          >
+            {warehouses.map((wh) => (
+              <option key={wh.id} value={wh.id}>
+                {wh.name} {wh.isDefault ? '⭐ (المخزن الرئيسي)' : ''}
+              </option>
+            ))}
+          </select>
+          <p className="text-[11px] text-gray-500 mt-1">سيتم إضافة كميات الأصناف المرتجعة مباشرة إلى رصيد هذا المخزن.</p>
         </div>
 
         {/* نوع المرتجع */}
@@ -374,7 +412,6 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
               />
             </div>
 
-            {/* المنتجات المختارة - ثابتة */}
             {Object.keys(exchangeProducts).length > 0 && (
               <div className="mb-4 border-2 border-green-200 rounded-lg p-3 bg-green-50">
                 <h4 className="font-bold text-green-800 mb-2 text-sm">
@@ -451,7 +488,6 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
               </div>
             )}
 
-            {/* نتائج البحث - لإضافة منتجات جديدة */}
             {searchResults.length > 0 && (
               <div>
                 <h4 className="font-bold text-gray-700 mb-2 text-sm">
@@ -652,7 +688,7 @@ export default function ReturnOrderPage({ params }: { params: Promise<{ id: stri
           disabled={isSaving || Object.keys(selectedItems).length === 0 || (returnType === 'EXCHANGE' && Object.keys(exchangeProducts).length === 0)}
           className="w-full bg-red-600 text-white py-4 rounded-xl font-black text-lg shadow-xl disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
-          {isSaving ? '⏳ جاري الحفظ...' : 
+          {isSaving ? '⏳ جاري الحفظ وتوريد البضاعة للمخزن...' : 
             printAfterSave 
               ? (returnType === 'EXCHANGE' ? '🔄 تأكيد الاستبدال والطباعة' : '↩️ تأكيد المرتجع والطباعة')
               : (returnType === 'EXCHANGE' ? '🔄 تأكيد الاستبدال' : '↩️ تأكيد المرتجع')

@@ -40,7 +40,6 @@ export default function InventoryAuditsManagementPage() {
     if (res.success && res.audit) {
       setSelectedAudit(res.audit)
       setDocSearchTerm('')
-      // تهيئة الكميات القابلة للتعديل
       const initialMap: { [id: string]: number } = {}
       res.audit.items.forEach((it: any) => {
         initialMap[it.id] = it.actualStock
@@ -65,7 +64,6 @@ export default function InventoryAuditsManagementPage() {
     )
   }, [selectedAudit, docSearchTerm])
 
-  // تغيير كمية الجرد الفعلي لصنف داخل الوثيقة
   const handleItemActualStockChange = (itemId: string, val: number) => {
     setEditedActualStock(prev => ({
       ...prev,
@@ -73,7 +71,7 @@ export default function InventoryAuditsManagementPage() {
     }))
   }
 
-  // حفظ التعديلات التي أجراها الأدمن/المحاسب على كميات الجرد الفعلي
+  // حفظ التعديلات
   const handleSaveAuditChanges = async () => {
     if (!selectedAudit) return
 
@@ -88,7 +86,6 @@ export default function InventoryAuditsManagementPage() {
 
     if (res.success) {
       alert(res.message)
-      // إعادة تحميل تفاصيل الوثيقة بعد التعديل
       openAuditDetails(selectedAudit.id)
     } else {
       alert('❌ خطأ: ' + res.error)
@@ -97,18 +94,19 @@ export default function InventoryAuditsManagementPage() {
 
   // تسوية واعتماد الجرد
   const handleReconcile = async (auditId: string) => {
-    // التأكد من حفظ أي تعديلات قبل التسوية إن وجدت
+    const targetWhName = selectedAudit.warehouse?.name || 'المخزن الرئيسي'
+
     const hasUnsavedEdits = selectedAudit.items.some(
       (it: any) => editedActualStock[it.id] !== undefined && editedActualStock[it.id] !== it.actualStock
     )
 
     if (hasUnsavedEdits) {
-      if (!confirm('⚠️ تنبيه: قمت بتعديل أرقام الجرد الفعلي لبعض الأصناف.\nهل تريد حفظ التعديلات ثم تسوية المخزون فوراً؟')) {
+      if (!confirm(`⚠️ تنبيه: قمت بتعديل أرقام الجرد الفعلي لبعض الأصناف.\nهل تريد حفظ التعديلات ثم تسوية رصيد مخزن (${targetWhName}) فوراً؟`)) {
         return
       }
       await handleSaveAuditChanges()
     } else {
-      if (!confirm('⚠️ تأكيد تسوية الجرد:\nسيتم تعديل الرصيد المتاح الفعلي للأصناف المجرودة فقط في المخزن، مع الاحتفاظ ببيانات الجرد كأرشيف تاريخي.')) {
+      if (!confirm(`⚠️ تأكيد تسوية الجرد:\nسيتم تعديل رصيد الأصناف المجرودة في المخزون العام وداخل مخزن (${targetWhName})، مع أرشفة الوثيقة.`)) {
         return
       }
     }
@@ -137,7 +135,7 @@ export default function InventoryAuditsManagementPage() {
             <h1 className="text-2xl md:text-3xl font-black text-white">إدارة ومطابقة الجرد المخزني</h1>
           </div>
           <p className="text-slate-400 text-sm mt-1">
-            مراجعة عمليات الجرد وتعديل أرقام الفعلي والبحث داخل الوثيقة وتسوية المخزون مع الأرشيف التاريخي
+            مراجعة عمليات الجرد لكل مخزن وفرع وتسوية الرصيد المتاح العام ورصيد المخزن المحدد
           </p>
         </div>
 
@@ -175,6 +173,7 @@ export default function InventoryAuditsManagementPage() {
                   <tr>
                     <th className="p-4">رقم الجرد</th>
                     <th className="p-4">تاريخ ووقت الجرد</th>
+                    <th className="p-4">المخزن المجرود</th>
                     <th className="p-4">العنوان / الملاحظات</th>
                     <th className="p-4">القائم بالجرد</th>
                     <th className="p-4 text-center">عدد الأصناف</th>
@@ -190,6 +189,9 @@ export default function InventoryAuditsManagementPage() {
                       </td>
                       <td className="p-4 text-xs font-mono text-slate-300">
                         {new Date(a.createdAt).toLocaleString('ar-EG')}
+                      </td>
+                      <td className="p-4 font-bold text-cyan-300 text-xs">
+                        🏢 {a.warehouse?.name || 'المخزن الرئيسي'}
                       </td>
                       <td className="p-4 text-slate-200">
                         {a.title || a.notes || 'جرد مخزن'}
@@ -246,7 +248,7 @@ export default function InventoryAuditsManagementPage() {
                   </span>
                 </div>
                 <p className="text-xs text-slate-400 mt-1 font-mono">
-                  القائم بالجرد: {selectedAudit.user.name} ({selectedAudit.user.role}) | التاريخ: {new Date(selectedAudit.createdAt).toLocaleString('ar-EG')}
+                  المخزن: <b className="text-cyan-400">{selectedAudit.warehouse?.name || 'المخزن الرئيسي'}</b> | القائم بالجرد: {selectedAudit.user.name} | التاريخ: {new Date(selectedAudit.createdAt).toLocaleString('ar-EG')}
                   {selectedAudit.reconciledAt && ` | تاريخ الاعتماد: ${new Date(selectedAudit.reconciledAt).toLocaleString('ar-EG')}`}
                 </p>
               </div>
@@ -299,7 +301,7 @@ export default function InventoryAuditsManagementPage() {
                         <td className="p-3 text-slate-300">{it.product.color}</td>
                         <td className="p-3 text-center font-mono font-bold text-slate-400">{it.systemStock}</td>
                         
-                        {/* خانة الجرد الفعلي قابلة للتعديل إن لم تتم التسوية بعد */}
+                        {/* خانة الجرد الفعلي */}
                         <td className="p-2 text-center bg-cyan-950/20">
                           {isPendingAudit ? (
                             <input
@@ -344,7 +346,6 @@ export default function InventoryAuditsManagementPage() {
                   إغلاق
                 </button>
 
-                {/* زر حفظ تعديلات الكميات إن كان قيد المراجعة */}
                 {selectedAudit.status === 'PENDING' && (
                   <button
                     onClick={handleSaveAuditChanges}
@@ -355,7 +356,6 @@ export default function InventoryAuditsManagementPage() {
                   </button>
                 )}
 
-                {/* زر اعتماد وتسوية المخزون الفعلي */}
                 {selectedAudit.status === 'PENDING' && (
                   <button
                     onClick={() => handleReconcile(selectedAudit.id)}

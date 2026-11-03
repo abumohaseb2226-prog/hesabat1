@@ -1,19 +1,20 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useSession } from 'next-auth/react'
 import { Scanner } from '@yudiel/react-qr-scanner'
-import { searchProducts } from '@/app/actions'
-import { saveInventoryAudit } from '@/app/audit-actions'
+import { searchProductsForAudit, saveInventoryAudit } from '@/app/audit-actions'
+import { getWarehouses } from '@/app/warehouse-management-actions'
 
 interface AuditLine {
   productId: string
   modelNo: string
   color: string
   description?: string
-  currentStock: number
+  totalStock: number // إجمالي رصيد الشركة بكل المخازن
+  warehouseStocks: { warehouseId: string; quantity: number }[] // تفصيل كل مخزن
   actualStock: number
 }
 
@@ -25,6 +26,11 @@ export default function MobileInventoryAuditPage() {
   // إذا كان المستخدم موظفاً، يتم إخفاء رصيد البرنامج وفروق العجز لحمايته من التلاعب
   const isStaffBlindAudit = userRole === 'EMPLOYEE'
 
+  // قائمة المخازن
+  const [warehouses, setWarehouses] = useState<any[]>([])
+  // 'ALL' يعني جرد عام شامل لكل المخازن، أو ID مخزن معين
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('ALL')
+
   const [searchTerm, setSearchTerm] = useState('')
   const [searchResults, setSearchResults] = useState<any[]>([])
   const [showScanner, setShowScanner] = useState(false)
@@ -32,11 +38,24 @@ export default function MobileInventoryAuditPage() {
   const [notes, setNotes] = useState('')
   const [isSaving, setIsSaving] = useState(false)
 
-  // البحث الحي بالأصناف
+  // تحميل قائمة المخازن وتعيين المخزن الرئيسي كافتراضي مع إتاحة "الكل"
+  useEffect(() => {
+    getWarehouses().then(res => {
+      if (res?.success && res.warehouses) {
+        setWarehouses(res.warehouses)
+        const defaultWh = res.warehouses.find((w: any) => w.isDefault) || res.warehouses[0]
+        if (defaultWh) {
+          setSelectedWarehouseId(defaultWh.id) // يبدأ بالمخزن الرئيسي افتراضياً
+        }
+      }
+    })
+  }, [])
+
+  // البحث الحي بالأصناف متضمناً أرصدة المخازن
   useEffect(() => {
     const timer = setTimeout(async () => {
       if (searchTerm.trim().length >= 1) {
-        const results = await searchProducts(searchTerm)
+        const results = await searchProductsForAudit(searchTerm)
         setSearchResults(results)
       } else {
         setSearchResults([])
@@ -44,6 +63,15 @@ export default function MobileInventoryAuditPage() {
     }, 250)
     return () => clearTimeout(timer)
   }, [searchTerm])
+
+  // دالة مساعدة لحساب العدد الاسترشادي حسب المخزن المختار حالياً
+  const getExpectedStock = (item: { totalStock: number; warehouseStocks?: { warehouseId: string; quantity: number }[] }) => {
+    if (selectedWarehouseId === 'ALL') {
+      return item.totalStock || 0
+    }
+    const ws = item.warehouseStocks?.find(w => w.warehouseId === selectedWarehouseId)
+    return ws ? ws.quantity : 0
+  }
 
   // إضافة صنف لقائمة الجرد
   const handleAddProduct = (prod: any, defaultQty: number = 1) => {
@@ -60,7 +88,8 @@ export default function MobileInventoryAuditPage() {
             modelNo: prod.modelNo,
             color: prod.color,
             description: prod.description,
-            currentStock: prod.currentStock,
+            totalStock: prod.currentStock,
+            warehouseStocks: prod.warehouseStocks || [],
             actualStock: defaultQty
           },
           ...prev
@@ -98,12 +127,19 @@ export default function MobileInventoryAuditPage() {
       return
     }
 
-    if (!confirm(`تأكيد حفظ وثيقة الجرد لـ (${auditList.length}) صنف؟\nملاحظة: هذا الحفظ توثيقي ولن يمس المخزون الحالي حتى تتم تسويته من لوحة التحكم.`)) {
+    const isAll = selectedWarehouseId === 'ALL'
+    const targetWhName = isAll 
+      ? 'جميع المخازن (جرد عام شامل)' 
+      : (warehouses.find(w => w.id === selectedWarehouseId)?.name || 'المخزن الرئيسي')
+
+    if (!confirm(`تأكيد حفظ وثيقة الجرد لـ (${auditList.length}) صنف في (${targetWhName})؟\n\nملاحظة: هذا الحفظ توثيقي ولن يمس المخزون الفعلي حتى تعتمده الإدارة من لوحة التحكم.`)) {
       return
     }
 
     setIsSaving(true)
     const res = await saveInventoryAudit({
+      title: `جرد: ${targetWhName}`,
+      warehouseId: isAll ? undefined : selectedWarehouseId,
       notes,
       items: auditList.map(i => ({
         productId: i.productId,
@@ -121,9 +157,22 @@ export default function MobileInventoryAuditPage() {
     }
   }
 
-  const totalActualPieces = auditList.reduce((s, it) => s + it.actualStock, 0)
-  const totalSystemPieces = auditList.reduce((s, it) => s + it.currentStock, 0)
-  const diffPieces = totalActualPieces - totalSystemPieces
+  // إجماليات الكشف الحالية المحسوبة ديناميكياً بناءً على المخزن المختار
+  const totals = useMemo(() => {
+    let actualSum = 0
+    let expectedSum = 0
+
+    auditList.forEach(item => {
+      actualSum += item.actualStock
+      expectedSum += getExpectedStock(item)
+    })
+
+    return {
+      actualSum,
+      expectedSum,
+      diffSum: actualSum - expectedSum
+    }
+  }, [auditList, selectedWarehouseId])
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-3 sm:p-5 font-sans pb-36" dir="rtl">
@@ -147,7 +196,7 @@ export default function MobileInventoryAuditPage() {
                 </span>
               )}
             </h1>
-            <p className="text-slate-400 text-xs">جرد سريع بالكاميرا والباركود دون مساس بالمخزون</p>
+            <p className="text-slate-400 text-xs">جرد سريع بالكاميرا والباركود لمخازن وفروع الشركة</p>
           </div>
         </div>
 
@@ -157,6 +206,34 @@ export default function MobileInventoryAuditPage() {
       </header>
 
       <div className="max-w-4xl mx-auto space-y-4">
+
+        {/* اختيار المخزن المراد جرده (مع خيار كل المخازن وتغيير العدد لحظياً) */}
+        <div className="bg-slate-900 border-2 border-cyan-500/50 p-4 rounded-2xl shadow-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="text-2xl">🏢</span>
+            <div>
+              <span className="text-sm font-black text-cyan-400 block">المخزن المراد جرده:</span>
+              <span className="text-[11px] text-slate-400">
+                {selectedWarehouseId === 'ALL' 
+                  ? 'يتم عرض إجمالي رصيد الشركة في كل الفروع' 
+                  : `يتم احتساب الرصيد الاسترشادي لمخزن: (${warehouses.find(w => w.id === selectedWarehouseId)?.name || ''})`}
+              </span>
+            </div>
+          </div>
+
+          <select
+            value={selectedWarehouseId}
+            onChange={(e) => setSelectedWarehouseId(e.target.value)}
+            className="w-full sm:w-auto min-w-[260px] bg-slate-950 border-2 border-cyan-400/80 rounded-xl p-3 text-xs sm:text-sm font-black text-white outline-none focus:border-cyan-300 cursor-pointer shadow-inner"
+          >
+            <option value="ALL">🌐 جميع المخازن (جرد عام شامل لكل الفروع)</option>
+            {warehouses.map(wh => (
+              <option key={wh.id} value={wh.id}>
+                🏢 {wh.name} {wh.isDefault ? '⭐ (المخزن الرئيسي)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
         
         {/* خانة البحث والكاميرا */}
         <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl shadow-lg">
@@ -202,39 +279,52 @@ export default function MobileInventoryAuditPage() {
             </div>
           )}
 
-          {/* نتائج البحث */}
+          {/* نتائج البحث المباشرة مع إظهار رصيد المخزن المختار تحديداً */}
           {searchResults.length > 0 && (
-            <div className="mt-2 divide-y divide-slate-800 bg-slate-950 border border-slate-800 rounded-xl max-h-56 overflow-y-auto">
-              {searchResults.map(prod => (
-                <div
-                  key={prod.id}
-                  onClick={() => handleAddProduct(prod, 1)}
-                  className="p-3 hover:bg-slate-900 cursor-pointer flex justify-between items-center transition"
-                >
-                  <div>
-                    <span className="font-black text-white text-base">{prod.modelNo}</span>
-                    <span className="text-cyan-400 font-bold text-xs mr-2">({prod.color})</span>
-                    {prod.description && <span className="text-slate-500 text-xs block">{prod.description}</span>}
+            <div className="mt-2 divide-y divide-slate-800 bg-slate-950 border border-slate-800 rounded-xl max-h-60 overflow-y-auto">
+              {searchResults.map(prod => {
+                const whQty = selectedWarehouseId === 'ALL'
+                  ? prod.currentStock
+                  : (prod.warehouseStocks?.find((w: any) => w.warehouseId === selectedWarehouseId)?.quantity || 0)
+
+                return (
+                  <div
+                    key={prod.id}
+                    onClick={() => handleAddProduct(prod, 1)}
+                    className="p-3 hover:bg-slate-900 cursor-pointer flex justify-between items-center transition"
+                  >
+                    <div>
+                      <span className="font-black text-white text-base">{prod.modelNo}</span>
+                      <span className="text-cyan-400 font-bold text-xs mr-2">({prod.color})</span>
+                      {prod.description && <span className="text-slate-500 text-xs block">{prod.description}</span>}
+                    </div>
+
+                    <div className="text-left font-mono">
+                      {!isStaffBlindAudit && (
+                        <div>
+                          <span className="text-cyan-300 font-bold text-xs block">
+                            {selectedWarehouseId === 'ALL' ? `الرصيد الكلي: ${whQty}` : `رصيد المخزن: ${whQty}`}
+                          </span>
+                          {selectedWarehouseId !== 'ALL' && (
+                            <span className="text-[10px] text-slate-500 block">الكلي: {prod.currentStock}</span>
+                          )}
+                        </div>
+                      )}
+                      <span className="text-xs text-emerald-400 font-bold">+ أضف للجرد</span>
+                    </div>
                   </div>
-                  <div className="text-left font-mono">
-                    {/* إخفاء رصيد البرنامج عن الموظف */}
-                    {!isStaffBlindAudit && (
-                      <span className="text-slate-400 text-xs block">رصيد مسجل: {prod.currentStock}</span>
-                    )}
-                    <span className="text-xs text-cyan-400 font-bold">+ أضف للجرد</span>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>
 
-        {/* قائمة الأصناف المجرودة */}
+        {/* قائمة الأصناف المجرودة (تتحدث أرقامها تلقائياً عند تغيير المخزن) */}
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl">
           <div className="flex justify-between items-center pb-3 border-b border-slate-800 mb-3">
             <h2 className="font-bold text-white text-sm sm:text-base flex items-center gap-2">
               <span>📦 كشف الأصناف المجرودة</span>
-              <span className="text-xs bg-slate-800 px-2 py-0.5 rounded-full text-cyan-400 font-mono">
+              <span className="text-xs bg-slate-800 px-2.5 py-0.5 rounded-full text-cyan-400 font-mono font-bold">
                 {auditList.length} صنف
               </span>
             </h2>
@@ -248,26 +338,32 @@ export default function MobileInventoryAuditPage() {
 
           {auditList.length === 0 ? (
             <div className="py-12 text-center text-slate-500 font-bold text-sm">
-              لم تبدأ في إضافة أصناف بعد. امسح الباركود بالكاميرا أو ابحث عن الموديل للبدء.
+              لم تبدأ في إضافة أصناف بعد. ابحث عن الموديل أو استخدم الكاميرا للبدء.
             </div>
           ) : (
             <div className="space-y-2.5">
               {auditList.map((item) => {
-                const diff = item.actualStock - item.currentStock
+                // حساب الرصيد الاسترشادي للمخزن المختار ديناميكياً في ثوانٍ
+                const expectedStock = getExpectedStock(item)
+                const diff = item.actualStock - expectedStock
+
                 return (
                   <div
                     key={item.productId}
-                    className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex flex-wrap sm:flex-nowrap justify-between items-center gap-3"
+                    className="bg-slate-950 border border-slate-800 p-3 rounded-xl flex flex-wrap sm:flex-nowrap justify-between items-center gap-3 transition"
                   >
                     <div>
                       <span className="font-black text-white text-base block">{item.modelNo}</span>
                       <span className="text-xs text-cyan-400 font-bold">اللون: {item.color}</span>
                       
-                      {/* إخفاء رصيد البرنامج عن الموظف العادي */}
                       {!isStaffBlindAudit && (
-                        <span className="text-xs text-slate-500 mr-2 font-mono">
-                          (المسجل بالبرنامج: {item.currentStock})
-                        </span>
+                        <div className="text-xs font-mono mt-0.5">
+                          <span className="text-slate-400">
+                            {selectedWarehouseId === 'ALL' 
+                              ? `(الرصيد الكلي: ${expectedStock})` 
+                              : `(رصيد المخزن المختار: ${expectedStock} | الكلي: ${item.totalStock})`}
+                          </span>
+                        </div>
                       )}
                     </div>
 
@@ -295,11 +391,11 @@ export default function MobileInventoryAuditPage() {
                         </button>
                       </div>
 
-                      {/* إخفاء فرق الجرد عن الموظف العادي وإظهاره فقط للإدارة */}
+                      {/* الفرق المحسوب بناءً على المخزن المحدد */}
                       {!isStaffBlindAudit && (
-                        <div className="text-left font-mono text-xs min-w-[65px]">
-                          <span className="block text-slate-500 text-[10px]">الفرق:</span>
-                          <span className={`font-black ${diff === 0 ? 'text-slate-400' : diff > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                        <div className="text-left font-mono text-xs min-w-[75px]">
+                          <span className="block text-slate-500 text-[10px]">الفرق بالمخزن:</span>
+                          <span className={`font-black text-sm ${diff === 0 ? 'text-slate-400' : diff > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                             {diff > 0 ? `+${diff}` : diff}
                           </span>
                         </div>
@@ -322,7 +418,7 @@ export default function MobileInventoryAuditPage() {
                 type="text"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="مثال: جرد استاند الجيب الصيفي، جرد الرف الأيمن..."
+                placeholder="مثال: جرد استاند الجيب، الرف العلوي..."
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl p-2.5 text-xs text-white outline-none"
               />
             </div>
@@ -338,15 +434,14 @@ export default function MobileInventoryAuditPage() {
           <div className="flex items-center gap-4 text-xs font-mono">
             <div>
               <span className="text-slate-400 block text-[10px]">إجمالي الجرد الفعلي:</span>
-              <span className="font-black text-cyan-400 text-lg">{totalActualPieces} قطعة</span>
+              <span className="font-black text-cyan-400 text-lg">{totals.actualSum} قطعة</span>
             </div>
 
-            {/* إخفاء صافي الفرق عن الموظف */}
             {!isStaffBlindAudit && (
               <div className="border-r border-slate-800 pr-4">
-                <span className="text-slate-400 block text-[10px]">صافي الفرق الكلي:</span>
-                <span className={`font-black text-lg ${diffPieces === 0 ? 'text-slate-300' : diffPieces > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {diffPieces > 0 ? `+${diffPieces}` : diffPieces}
+                <span className="text-slate-400 block text-[10px]">صافي الفرق بالمخزن المختار:</span>
+                <span className={`font-black text-lg ${totals.diffSum === 0 ? 'text-slate-300' : totals.diffSum > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {totals.diffSum > 0 ? `+${totals.diffSum}` : totals.diffSum}
                 </span>
               </div>
             )}

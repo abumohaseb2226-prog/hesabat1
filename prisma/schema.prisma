@@ -165,6 +165,11 @@ model Order {
   customer    Customer    @relation(fields: [customerId], references: [id])
   safeId      String?
   safe        Safe?       @relation(fields: [safeId], references: [id])
+
+  // ربط الأوردر بمخزن الصرف
+  warehouseId String?
+  warehouse   Warehouse?  @relation(fields: [warehouseId], references: [id])
+
   items       OrderItem[]
   notes       String?
 
@@ -244,6 +249,10 @@ model ReturnOrder {
   refundMethod      String        @default("CASH")
   safeId            String?
   safe              Safe?         @relation(fields: [safeId], references: [id])
+
+  // ربط المرتجع بالمخزن المستلم
+  warehouseId       String?
+  warehouse         Warehouse?    @relation(fields: [warehouseId], references: [id])
   
   newOrderId        String?
   newOrder          Order?        @relation("ExchangeNewOrder", fields: [newOrderId], references: [id])
@@ -437,6 +446,9 @@ model InventoryAudit {
   title          String?
   notes          String?
   status         String               @default("PENDING")
+
+  warehouseId    String?
+  warehouse      Warehouse?           @relation(fields: [warehouseId], references: [id])
   
   userId         String
   user           User                 @relation(fields: [userId], references: [id])
@@ -696,7 +708,7 @@ model ChartAccount {
 }
 
 // =========================================================================
-// ✅ نظام إدارة المخازن المتعددة والمناقلات (Warehouse Management System)
+// نظام إدارة المخازن المتعددة والمناقلات
 // =========================================================================
 
 model Warehouse {
@@ -707,6 +719,9 @@ model Warehouse {
   isDefault      Boolean            @default(false)
   
   stocks         WarehouseStock[]
+  orders         Order[]
+  returns        ReturnOrder[]
+  audits         InventoryAudit[]
   transfersFrom  StockTransfer[]    @relation("TransferSource")
   transfersTo    StockTransfer[]    @relation("TransferDestination")
 

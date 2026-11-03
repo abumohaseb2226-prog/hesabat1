@@ -94,6 +94,17 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
 
   const { vendor, ledger = [], summary } = data || {}
 
+  // حساب الرصيد الافتتاحي السابق من حركات كشف الحساب إن وُجد
+  const openingBalanceInfo = useMemo(() => {
+    const openingRow = ledger.find((t: any) => t.type === 'OPENING_BALANCE')
+    if (!openingRow) return { amount: 0, isCredit: true }
+    const isCredit = (Number(openingRow.credit) || 0) > 0
+    return {
+      amount: isCredit ? openingRow.credit : openingRow.debit,
+      isCredit
+    }
+  }, [ledger])
+
   const availableSafes = useMemo(() => {
     if (!ledger || ledger.length === 0) return []
     const safesSet = new Set<string>()
@@ -187,7 +198,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-2xl font-bold text-gray-800">📊 كشف حساب المورد</h1>
-            <p className="text-sm text-gray-600 mt-1">دفتر الأستاذ والمشتريات</p>
+            <p className="text-sm text-gray-600 mt-1">دفتر الأستاذ والمشتريات المالية</p>
           </div>
           <div className="flex gap-2">
             <button
@@ -222,45 +233,53 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
             <div className="font-bold text-lg">{vendor?.phone || '-'}</div>
           </div>
           <div>
-            <div className="text-xs opacity-80">عدد المنتجات</div>
+            <div className="text-xs opacity-80">عدد المنتجات المرتبطة</div>
             <div className="font-bold text-lg">{summary?.productsCount ?? 0}</div>
           </div>
         </div>
       </div>
 
-      {/* الملخص المالي */}
+      {/* الملخص المالي المصحح */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
-        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-blue-500">
-          <div className="text-xs text-gray-600 mb-1">مشتريات (منتجات)</div>
-          <div className="font-bold text-xl text-blue-700 font-mono">{(summary?.totalPurchasesFromProducts ?? 0).toFixed(2)}</div>
-          <div className="text-xs text-gray-500">من المخزون الافتتاحي</div>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-indigo-500">
-          <div className="text-xs text-gray-600 mb-1">مشتريات (فواتير)</div>
-          <div className="font-bold text-xl text-indigo-700 font-mono">{(summary?.totalPurchasesFromInvoices ?? 0).toFixed(2)}</div>
-          <div className="text-xs text-gray-500">فواتير مسجلة</div>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-orange-500">
-          <div className="text-xs text-gray-600 mb-1">إجمالي المشتريات</div>
-          <div className="font-bold text-xl text-orange-700 font-mono">{(summary?.totalPurchases ?? 0).toFixed(2)}</div>
-          <div className="text-xs text-gray-500">ج.م</div>
-        </div>
-        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-green-500">
-          <div className="text-xs text-gray-600 mb-1">المدفوعات</div>
-          <div className="font-bold text-xl text-green-700 font-mono">{(summary?.totalPayments ?? 0).toFixed(2)}</div>
-          <div className="text-xs text-gray-500">ج.م</div>
-        </div>
-        <div className={`bg-white p-4 rounded-xl shadow border-r-4 ${
-          (summary?.currentBalance ?? 0) > 0 ? 'border-red-500' : 'border-gray-500'
-        }`}>
-          <div className="text-xs text-gray-600 mb-1">الرصيد الحالي</div>
-          <div className={`font-bold text-xl font-mono ${
-            (summary?.currentBalance ?? 0) > 0 ? 'text-red-700' : 'text-gray-700'
-          }`}>
-            {(summary?.currentBalance ?? 0).toFixed(2)}
+        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-purple-500">
+          <div className="text-xs text-gray-600 mb-1">الرصيد الافتتاحي السابق</div>
+          <div className={`font-bold text-xl font-mono ${openingBalanceInfo.amount > 0 ? (openingBalanceInfo.isCredit ? 'text-purple-700' : 'text-emerald-700') : 'text-gray-400'}`}>
+            {openingBalanceInfo.amount.toFixed(2)}
           </div>
-          <div className="text-xs text-gray-500">
-            {(summary?.currentBalance ?? 0) > 0 ? 'له عندنا' : 'مديون'}
+          <div className="text-[11px] text-gray-500">
+            {openingBalanceInfo.amount > 0 ? (openingBalanceInfo.isCredit ? 'له علينا' : 'عليه لنا') : 'لا يوجد'}
+          </div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-indigo-500">
+          <div className="text-xs text-gray-600 mb-1">إجمالي فواتير المشتريات</div>
+          <div className="font-bold text-xl text-indigo-700 font-mono">{(summary?.totalPurchases ?? 0).toFixed(2)}</div>
+          <div className="text-xs text-gray-500">فواتير شراء معتمدة</div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-orange-500">
+          <div className="text-xs text-gray-600 mb-1">إجمالي المرتجعات</div>
+          <div className="font-bold text-xl text-orange-700 font-mono">{(summary?.totalReturns ?? 0).toFixed(2)}</div>
+          <div className="text-xs text-gray-500">مرتجع بضاعة للمورد</div>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl shadow border-r-4 border-green-500">
+          <div className="text-xs text-gray-600 mb-1">إجمالي المدفوعات المسددة</div>
+          <div className="font-bold text-xl text-green-700 font-mono">{(summary?.totalPayments ?? 0).toFixed(2)}</div>
+          <div className="text-xs text-gray-500">سداد نقدي وشيكات</div>
+        </div>
+
+        <div className={`bg-white p-4 rounded-xl shadow border-r-4 ${
+          (summary?.currentBalance ?? 0) > 0 ? 'border-red-500' : (summary?.currentBalance ?? 0) < 0 ? 'border-emerald-500' : 'border-gray-500'
+        }`}>
+          <div className="text-xs text-gray-600 mb-1">الرصيد الصافي الحالي</div>
+          <div className={`font-bold text-xl font-mono ${
+            (summary?.currentBalance ?? 0) > 0 ? 'text-red-700' : (summary?.currentBalance ?? 0) < 0 ? 'text-emerald-700' : 'text-gray-700'
+          }`}>
+            {Math.abs(summary?.currentBalance ?? 0).toFixed(2)}
+          </div>
+          <div className="text-xs text-gray-500 font-bold">
+            {(summary?.currentBalance ?? 0) > 0 ? 'له عندنا (مستحق)' : (summary?.currentBalance ?? 0) < 0 ? 'مديون لنا' : 'خالص الحساب'}
           </div>
         </div>
       </div>
@@ -281,7 +300,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
           📄 تسجيل فاتورة سريعة
         </button>
         <button
-          onClick={() => router.push(`/payments/new`)}
+          onClick={() => router.push(`/payments/new?vendorId=${id}`)}
           className="bg-red-600 text-white px-4 py-2 rounded-lg font-bold hover:bg-red-700 shadow transition"
         >
           💰 دفع للمورد
@@ -398,7 +417,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         </div>
       </div>
 
-      {/* جدول الحركات بتسميات محاسبية سليمة 100% */}
+      {/* جدول الحركات المحاسبية */}
       <div className="bg-white rounded-xl shadow overflow-x-auto">
         <table className="w-full text-right min-w-[900px]">
           <thead className="bg-gray-100">
@@ -423,17 +442,18 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
             ) : (
               filteredLedger.map((t: any, idx: number) => {
                 const isInvoice = (t.type === 'PURCHASE' || t.type === 'RETURN') && !t.isFromProducts && t.reference
+                const isOpeningBalance = t.type === 'OPENING_BALANCE'
 
                 return (
                   <tr 
                     key={idx} 
                     className={`border-b hover:bg-gray-50 transition ${
-                      t.isFromProducts ? 'bg-blue-50/80 font-semibold' : ''
+                      isOpeningBalance ? 'bg-purple-50/70 font-semibold' : ''
                     }`}
                   >
                     <td className="p-3 text-sm">
-                      {t.isFromProducts ? (
-                        <span className="text-xs text-blue-700 font-bold bg-blue-100 px-2 py-0.5 rounded">رصيد أول</span>
+                      {isOpeningBalance ? (
+                        <span className="text-xs text-purple-700 font-bold bg-purple-100 px-2 py-0.5 rounded">رصيد سابق</span>
                       ) : (
                         <>
                           {new Date(t.date).toLocaleDateString('ar-EG')}
@@ -449,7 +469,9 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
 
                     <td className="p-3">
                       <div className="flex items-center gap-2">
-                        <span className="font-bold text-sm font-mono text-purple-900 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                        <span className={`font-bold text-sm font-mono px-2 py-0.5 rounded border ${
+                          isOpeningBalance ? 'text-purple-900 bg-purple-100 border-purple-300' : 'text-purple-900 bg-purple-50 border-purple-200'
+                        }`}>
                           {t.reference}
                         </span>
 

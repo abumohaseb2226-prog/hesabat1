@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import * as XLSX from 'xlsx'
 import {
@@ -17,6 +17,7 @@ import {
   getSyncOperations,
   revertSyncOperation
 } from '@/app/admin-actions'
+import { getWarehouses } from '@/app/warehouse-management-actions'
 
 export default function ProductsPage() {
   const [products, setProducts] = useState<any[]>([])
@@ -26,6 +27,11 @@ export default function ProductsPage() {
   const [searchTerm, setSearchTerm] = useState('')
   const [vendorFilter, setVendorFilter] = useState('ALL')
   const [statusFilter, setStatusFilter] = useState('ALL')
+  const [selectedWarehouseFilter, setSelectedWarehouseFilter] = useState('ALL')
+
+  // بيانات المخازن
+  const [warehouses, setWarehouses] = useState<any[]>([])
+  const [excelWarehouseId, setExcelWarehouseId] = useState('') // المخزن المحدد لرفع الإكسيل
 
   // التحديد المتعدد مع دعم Shift + Click
   const [selectedIds, setSelectedIds] = useState<string[]>([])
@@ -56,6 +62,7 @@ export default function ProductsPage() {
     cost: '',
     discount: '0',
     status: 'OPEN',
+    warehouseId: '',
     colors: [{ color: '', stock: '0' }]
   })
 
@@ -79,9 +86,22 @@ export default function ProductsPage() {
     setSyncOperations(ops || [])
   }
 
+  const loadWarehousesData = async () => {
+    const res = await getWarehouses()
+    if (res?.success && res.warehouses) {
+      setWarehouses(res.warehouses)
+      const defaultWh = res.warehouses.find((w: any) => w.isDefault) || res.warehouses[0]
+      if (defaultWh) {
+        setNewProduct(prev => ({ ...prev, warehouseId: defaultWh.id }))
+        setExcelWarehouseId(defaultWh.id)
+      }
+    }
+  }
+
   useEffect(() => {
     refreshProducts()
     loadSyncHistory()
+    loadWarehousesData()
   }, [])
 
   // قائمة الموردين المتاحين للفلترة
@@ -95,7 +115,7 @@ export default function ProductsPage() {
     return Array.from(vSet).sort()
   }, [products])
 
-  // فلترة المنتجات
+  // فلترة المنتجات (البحث، المورد، الحالة، والمخزن)
   const filteredProducts = useMemo(() => {
     return products.filter(p => {
       if (searchTerm.trim() !== '') {
@@ -115,13 +135,16 @@ export default function ProductsPage() {
         if (p.status !== statusFilter) return false
       }
 
+      if (selectedWarehouseFilter !== 'ALL') {
+        const whStock = p.warehouseStocks?.find((ws: any) => ws.warehouseId === selectedWarehouseFilter)
+        if (!whStock || whStock.quantity <= 0) return false
+      }
+
       return true
     })
-  }, [products, searchTerm, vendorFilter, statusFilter])
+  }, [products, searchTerm, vendorFilter, statusFilter, selectedWarehouseFilter])
 
-  // =========================================================================
-  // ✅ التحديد السريع مع دعم زر Shift + Click
-  // =========================================================================
+  // التحديد السريع مع دعم زر Shift + Click
   const handleCheckboxClick = (e: React.MouseEvent<HTMLInputElement>, id: string, index: number) => {
     const isChecked = (e.target as HTMLInputElement).checked
 
@@ -160,9 +183,7 @@ export default function ProductsPage() {
     }
   }
 
-  // =========================================================================
-  // ✅ تصفير الرصيد الأولي للأصناف المحددة (stockQty = 0)
-  // =========================================================================
+  // تصفير الرصيد الأولي للأصناف المحددة
   const handleResetInitialStock = async () => {
     if (selectedIds.length === 0) return
 
@@ -184,15 +205,12 @@ export default function ProductsPage() {
     }
   }
 
-  // =========================================================================
-  // 📥 أوبشنات الإكسيل (استيراد أصناف + تعديل الكميات + تحميل النماذج)
-  // =========================================================================
-
-  // 1. تحميل نموذج استيراد الأصناف الجديدة
+  // تحميل نموذج استيراد الأصناف الجديدة (يتضمن عمود المخزن اختيارياً)
   const downloadProductTemplate = () => {
+    const defaultWhName = warehouses.find(w => w.id === excelWarehouseId)?.name || "المخزن الرئيسي"
     const templateData = [
-      { modelNo: "4805", color: "أسود", vendor: "رؤية شتوي", price: 310, cost: 234, stockQty: 10, discount: 0, description: "صنف تجريبي", status: "OPEN" },
-      { modelNo: "4805", color: "كحلي", vendor: "رؤية شتوي", price: 310, cost: 234, stockQty: 8, discount: 0, description: "صنف تجريبي", status: "OPEN" }
+      { modelNo: "4805", color: "أسود", vendor: "رؤية شتوي", price: 310, cost: 234, stockQty: 10, discount: 0, description: "صنف تجريبي", status: "OPEN", "المخزن": defaultWhName },
+      { modelNo: "4805", color: "كحلي", vendor: "رؤية شتوي", price: 310, cost: 234, stockQty: 8, discount: 0, description: "صنف تجريبي", status: "OPEN", "المخزن": defaultWhName }
     ]
     const ws = XLSX.utils.json_to_sheet(templateData)
     const wb = XLSX.utils.book_new()
@@ -200,7 +218,7 @@ export default function ProductsPage() {
     XLSX.writeFile(wb, "Products_Template.xlsx")
   }
 
-  // رفع ملف أصناف جديدة من الإكسيل
+  // رفع ملف أصناف جديدة من الإكسيل مع توجيهه للمخزن المحدد
   const handleUploadProductsExcel = (e: any) => {
     const file = e.target.files[0]
     if (!file) return
@@ -213,7 +231,9 @@ export default function ProductsPage() {
         const ws = wb.Sheets[wb.SheetNames[0]]
         const data = XLSX.utils.sheet_to_json(ws) as any[]
 
-        if (confirm(`تم قراءة ${data.length} صنف من الملف. هل تريد بدء الاستيراد؟`)) {
+        const targetWhName = warehouses.find(w => w.id === excelWarehouseId)?.name || 'المخزن الرئيسي'
+
+        if (confirm(`تم قراءة ${data.length} صنف من الملف.\nسيتم توريد الكميات إلى: (${targetWhName}).\nهل تريد المتابعة؟`)) {
           setIsUploading(true)
           const BATCH_SIZE = 200
           let successCount = 0
@@ -221,13 +241,13 @@ export default function ProductsPage() {
           for (let i = 0; i < data.length; i += BATCH_SIZE) {
             const chunk = data.slice(i, i + BATCH_SIZE)
             setUploadProgressText(`جاري معالجة الأصناف من ${i + 1} إلى ${Math.min(i + BATCH_SIZE, data.length)}...`)
-            const res = await addBulkProducts(chunk)
+            const res = await addBulkProducts(chunk, excelWarehouseId)
             if (res.success) successCount += (res.count || 0)
           }
 
           setIsUploading(false)
           setUploadProgressText('')
-          alert(`✅ تم الانتهاء بنجاح! تم استيراد/تحديث ${successCount} صنف.`)
+          alert(`✅ تم الانتهاء بنجاح! تم استيراد/تحديث ${successCount} صنف وتوريد رصيدها إلى (${targetWhName}).`)
           refreshProducts()
           e.target.value = ''
         }
@@ -239,7 +259,7 @@ export default function ProductsPage() {
     reader.readAsBinaryString(file)
   }
 
-  // 2. تحميل نموذج تعديل المخزون الأولي
+  // تحميل نموذج تعديل المخزون الأولي
   const downloadStockTemplate = () => {
     const templateData = [
       { modelNo: "4805", color: "أسود", stockQty: 12 },
@@ -251,7 +271,7 @@ export default function ProductsPage() {
     XLSX.writeFile(wb, "Initial_Stock_Template.xlsx")
   }
 
-  // رفع ملف إكسيل لتحديث وتعديل المخزون الأولي
+  // رفع ملف إكسيل لتحديث وتعديل المخزون الأولي مع المخزن
   const handleUploadInitialStockExcel = (e: any) => {
     const file = e.target.files[0]
     if (!file) return
@@ -264,15 +284,17 @@ export default function ProductsPage() {
         const ws = wb.Sheets[wb.SheetNames[0]]
         const data = XLSX.utils.sheet_to_json(ws) as any[]
 
-        if (confirm(`تم قراءة ${data.length} سطر لتحديث المخزون الأولي. هل تريد المتابعة؟`)) {
+        const targetWhName = warehouses.find(w => w.id === excelWarehouseId)?.name || 'المخزن الرئيسي'
+
+        if (confirm(`تم قراءة ${data.length} سطر لتحديث المخزون الأولي.\nالمخزن المستهدف للتعديل: (${targetWhName}).\nهل تريد المتابعة؟`)) {
           setIsUploading(true)
-          setUploadProgressText('جاري تحديث الكميات وإعادة ضبط الرصيد المتاح...')
-          const res = await updateInitialStockBulk(data)
+          setUploadProgressText('جاري تحديث الكميات وإعادة ضبط الرصيد المتاح بالمخزن...')
+          const res = await updateInitialStockBulk(data, excelWarehouseId)
           setIsUploading(false)
           setUploadProgressText('')
 
           if (res.success) {
-            alert(`✅ تقرير التحديث:\n- تم تحديث: ${res.updatedCount} صنف بنجاح.\n- لم يتم العثور على: ${res.notFoundCount} صنف.`)
+            alert(`✅ تقرير التحديث:\n- تم تحديث: ${res.updatedCount} صنف بنجاح بمخزن (${targetWhName}).\n- لم يتم العثور على: ${res.notFoundCount} صنف.`)
             refreshProducts()
           } else {
             alert('❌ فشل التحديث: ' + res.error)
@@ -287,9 +309,7 @@ export default function ProductsPage() {
     reader.readAsBinaryString(file)
   }
 
-  // =========================================================================
-  // 🔄 مزامنة جوجل شيت (Google Sheets)
-  // =========================================================================
+  // مزامنة جوجل شيت
   const handleSyncSheets = async () => {
     if (!syncStartDate) return alert('يرجى تحديد تاريخ البدء')
     setIsSyncing(true)
@@ -317,9 +337,7 @@ export default function ProductsPage() {
     }
   }
 
-  // =========================================================================
-  // ➕ إضافة صنف جديد يدوياً مع جدول الألوان
-  // =========================================================================
+  // إضافة صنف جديد يدوياً مع جدول الألوان والمخزن المستلم
   const handleAddColorRow = () => {
     setNewProduct(prev => ({
       ...prev,
@@ -352,7 +370,8 @@ export default function ProductsPage() {
     })
 
     if (res.success) {
-      alert('✅ تمت إضافة الصنف بنجاح')
+      alert('✅ تمت إضافة الصنف بنجاح وتوريد كميته للمخزن')
+      const defaultWh = warehouses.find((w: any) => w.isDefault) || warehouses[0]
       setNewProduct({
         modelNo: '',
         description: '',
@@ -361,6 +380,7 @@ export default function ProductsPage() {
         cost: '',
         discount: '0',
         status: 'OPEN',
+        warehouseId: defaultWh?.id || '',
         colors: [{ color: '', stock: '0' }]
       })
       setShowAddForm(false)
@@ -370,9 +390,7 @@ export default function ProductsPage() {
     }
   }
 
-  // =========================================================================
-  // الحذف (محدد / الكل)
-  // =========================================================================
+  // حذف المحدد
   const handleDeleteSelected = async () => {
     if (selectedIds.length === 0) return
     if (!confirm(`هل أنت متأكد من حذف (${selectedIds.length}) صنف محدد؟`)) return
@@ -391,6 +409,7 @@ export default function ProductsPage() {
     }
   }
 
+  // حذف الكل غير المرتبط
   const handleDeleteAll = async () => {
     if (!confirm('⚠️ تحذير: سيتم حذف جميع الأصناف غير المرتبطة بأوردرات.\nهل أنت متأكد تماماً؟')) return
     setIsDeleting(true)
@@ -405,6 +424,7 @@ export default function ProductsPage() {
     }
   }
 
+  // حذف صنف فردي
   const handleDeleteOne = async (id: string, modelNo: string) => {
     if (!confirm(`هل تريد حذف الصنف موديل: ${modelNo}؟`)) return
     const res = await deleteProduct(id)
@@ -452,11 +472,10 @@ export default function ProductsPage() {
               <span>إدارة المخزون والأصناف</span>
             </h1>
             <p className="text-xs text-gray-500 mt-1">
-              إضافة الأصناف، استيراد الإكسيل، تعديل المخزون، مزامنة جوجل شيت، والتحديد السريع بـ Shift
+              إضافة الأصناف، استيراد وتحديث الإكسيل، فلترة الفروع والمخازن، وتصفير الأرصدة الأولية بضغطة زر
             </p>
           </div>
 
-          {/* أزرار فتح النوافذ والعمليات */}
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setShowAddForm(!showAddForm)}
@@ -480,6 +499,13 @@ export default function ProductsPage() {
             </button>
 
             <Link
+              href="/admin/warehouses"
+              className="bg-cyan-600 hover:bg-cyan-700 text-white px-3.5 py-2 rounded-lg text-xs font-bold transition shadow"
+            >
+              🏢 إدارة المخازن
+            </Link>
+
+            <Link
               href="/admin"
               className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-3.5 py-2 rounded-lg text-xs font-bold transition border border-gray-200"
             >
@@ -488,12 +514,37 @@ export default function ProductsPage() {
           </div>
         </div>
 
-        {/* 2. قسم الإكسيل الموسع (استيراد أصناف جديدة + تعديل كميات المخزون الأولي) */}
+        {/* 2. قسم الإكسيل الموسع (مع تحديد المخزن المستلم للبضاعة المرفوعة) */}
         {showExcelSection && (
           <div className="bg-emerald-50 border-2 border-emerald-200 p-4 rounded-xl mb-4 space-y-4 animate-in fade-in duration-200">
-            <h3 className="font-bold text-emerald-900 text-sm border-b border-emerald-200 pb-2">
-              📥 استيراد وتحديث البيانات عبر ملفات Excel
-            </h3>
+            
+            {/* هيدر قسم الإكسيل مع اختيار المخزن */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-emerald-200 pb-3">
+              <div>
+                <h3 className="font-bold text-emerald-900 text-sm">
+                  📥 استيراد وتحديث البيانات عبر ملفات Excel
+                </h3>
+                <p className="text-[11px] text-emerald-700 mt-0.5">
+                  حدد المخزن الذي سيستقبل كميات البضاعة المرفوعة من الإكسيل (الافتراضي: المخزن الرئيسي)
+                </p>
+              </div>
+
+              {/* حقل اختيار المخزن للإكسيل */}
+              <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-xl border-2 border-emerald-300 shadow-sm w-full sm:w-auto">
+                <label className="text-xs font-bold text-emerald-950 whitespace-nowrap">🏢 المخزن المستلم للإكسيل:</label>
+                <select
+                  value={excelWarehouseId}
+                  onChange={(e) => setExcelWarehouseId(e.target.value)}
+                  className="bg-transparent text-xs font-bold text-cyan-900 outline-none cursor-pointer"
+                >
+                  {warehouses.map(wh => (
+                    <option key={wh.id} value={wh.id}>
+                      {wh.name} {wh.isDefault ? '⭐ (الرئيسي)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               
@@ -515,7 +566,7 @@ export default function ProductsPage() {
                   disabled={isUploading}
                   className="w-full text-xs p-1.5 border rounded bg-gray-50 cursor-pointer"
                 />
-                <span className="text-[10px] text-gray-500 block">الأعمدة: modelNo, color, vendor, price, cost, stockQty, discount</span>
+                <span className="text-[10px] text-gray-500 block">الأعمدة: modelNo, color, vendor, price, cost, stockQty, discount, المخزن (اختياري)</span>
               </div>
 
               {/* ب. تعديل وتحديث المخزون الأولي للأصناف الموجودة */}
@@ -536,7 +587,7 @@ export default function ProductsPage() {
                   disabled={isUploading}
                   className="w-full text-xs p-1.5 border rounded bg-gray-50 cursor-pointer"
                 />
-                <span className="text-[10px] text-gray-500 block">الأعمدة: modelNo, color, stockQty (يعيد ضبط الرصيد المتاح تلقائياً)</span>
+                <span className="text-[10px] text-gray-500 block">الأعمدة: modelNo, color, stockQty (يعيد ضبط الرصيد المتاح بالمخزن تلقائياً)</span>
               </div>
 
             </div>
@@ -594,17 +645,18 @@ export default function ProductsPage() {
           </div>
         )}
 
-        {/* 4. فورم إضافة صنف جديد يدوياً */}
+        {/* 4. فورم إضافة صنف جديد يدوياً مع اختيار المخزن */}
         {showAddForm && (
           <form onSubmit={handleSaveNewProduct} className="bg-blue-50 border-2 border-blue-200 p-4 rounded-xl mb-4 space-y-3 animate-in fade-in duration-200">
-            <h3 className="font-bold text-blue-900 text-sm border-b border-blue-200 pb-2">➕ إضافة صنف جديد</h3>
+            <h3 className="font-bold text-blue-900 text-sm border-b border-blue-200 pb-2">➕ إضافة صنف جديد وتوريده للمخزن</h3>
             
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
               <div>
                 <label className="block text-xs font-bold text-gray-700 mb-1">الموديل *</label>
                 <input
                   type="text"
                   required
+                  placeholder="رقم الموديل..."
                   value={newProduct.modelNo}
                   onChange={(e) => setNewProduct({ ...newProduct, modelNo: e.target.value })}
                   className="w-full bg-white border p-2 rounded text-xs font-bold"
@@ -615,10 +667,26 @@ export default function ProductsPage() {
                 <label className="block text-xs font-bold text-gray-700 mb-1">المورد</label>
                 <input
                   type="text"
+                  placeholder="اسم المورد..."
                   value={newProduct.vendor}
                   onChange={(e) => setNewProduct({ ...newProduct, vendor: e.target.value })}
                   className="w-full bg-white border p-2 rounded text-xs"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-cyan-800 mb-1">المخزن المستلم للرصيد *</label>
+                <select
+                  value={newProduct.warehouseId}
+                  onChange={(e) => setNewProduct({ ...newProduct, warehouseId: e.target.value })}
+                  className="w-full bg-white border-2 border-cyan-400 p-2 rounded text-xs font-bold text-gray-800 outline-none"
+                >
+                  {warehouses.map(wh => (
+                    <option key={wh.id} value={wh.id}>
+                      {wh.name} {wh.isDefault ? '⭐ (المخزن الرئيسي)' : ''}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>
@@ -627,6 +695,7 @@ export default function ProductsPage() {
                   type="number"
                   step="0.01"
                   required
+                  placeholder="0.00"
                   value={newProduct.price}
                   onChange={(e) => setNewProduct({ ...newProduct, price: e.target.value })}
                   className="w-full bg-white border p-2 rounded text-xs font-mono font-bold"
@@ -638,6 +707,7 @@ export default function ProductsPage() {
                 <input
                   type="number"
                   step="0.01"
+                  placeholder="0.00"
                   value={newProduct.cost}
                   onChange={(e) => setNewProduct({ ...newProduct, cost: e.target.value })}
                   className="w-full bg-white border p-2 rounded text-xs font-mono"
@@ -707,14 +777,14 @@ export default function ProductsPage() {
                 type="submit"
                 className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded text-xs font-bold shadow"
               >
-                حفظ الصنف والألوان ✅
+                حفظ الصنف وتوريده للمخزن ✅
               </button>
             </div>
           </form>
         )}
 
-        {/* 5. شريط البحث والفلترة المباشرة */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-3 border-t border-gray-100">
+        {/* 5. شريط البحث والفلترة المباشرة مع فلتر المخازن */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-3 pt-3 border-t border-gray-100">
           <div className="md:col-span-2">
             <input
               type="text"
@@ -723,6 +793,21 @@ export default function ProductsPage() {
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-gray-50 border border-gray-300 rounded-lg p-2.5 text-xs font-bold text-gray-800 focus:bg-white focus:border-blue-500 outline-none"
             />
+          </div>
+
+          <div>
+            <select
+              value={selectedWarehouseFilter}
+              onChange={(e) => setSelectedWarehouseFilter(e.target.value)}
+              className="w-full bg-gray-50 border border-gray-300 rounded-lg p-2.5 text-xs font-bold text-cyan-800 outline-none"
+            >
+              <option value="ALL">🏢 جميع المخازن والفروع</option>
+              {warehouses.map(wh => (
+                <option key={wh.id} value={wh.id}>
+                  {wh.name} {wh.isDefault ? '⭐ (الرئيسي)' : ''}
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>
@@ -755,8 +840,14 @@ export default function ProductsPage() {
       {/* 6. الشريط العلوي للجدول (العدد، المحدد، أزرار التصفير والحذف) */}
       <div className="bg-white px-4 py-3 rounded-t-xl border border-b-0 border-gray-200 flex flex-wrap justify-between items-center gap-3">
         
-        <div className="text-xs font-bold text-gray-600">
-          عدد الأصناف المصفاة: <span className="font-mono text-blue-700 text-sm font-black">{filteredProducts.length}</span>
+        <div className="text-xs font-bold text-gray-600 flex items-center gap-2">
+          <span>عدد الأصناف المصفاة:</span>
+          <span className="font-mono text-blue-700 text-sm font-black">{filteredProducts.length}</span>
+          {selectedWarehouseFilter !== 'ALL' && (
+            <span className="bg-cyan-100 text-cyan-800 text-[11px] px-2 py-0.5 rounded-full font-bold">
+              تصفية مخزن: {warehouses.find(w => w.id === selectedWarehouseFilter)?.name}
+            </span>
+          )}
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
@@ -766,7 +857,6 @@ export default function ProductsPage() {
 
           {selectedIds.length > 0 && (
             <>
-              {/* ✅ زر تصفير الرصيد الأولي الجديد */}
               <button
                 type="button"
                 onClick={handleResetInitialStock}
@@ -778,7 +868,6 @@ export default function ProductsPage() {
                 <span>{isResettingInitial ? 'جاري التصفير...' : `تصفير الرصيد الأولي (${selectedIds.length})`}</span>
               </button>
 
-              {/* زر حذف المحدد */}
               <button
                 type="button"
                 onClick={handleDeleteSelected}
@@ -810,7 +899,7 @@ export default function ProductsPage() {
         </div>
       </div>
 
-      {/* 7. جدول الأصناف المطابق للصورة 100% مع ميزة Shift + Click */}
+      {/* 7. جدول الأصناف الكامل مع ميزة Shift + Click وعرض رصيد المخزن المختار */}
       <div className="bg-white rounded-b-xl shadow-sm border border-gray-200 overflow-x-auto">
         <table className="w-full text-right text-sm">
           <thead className="bg-gray-50 text-gray-700 border-b border-gray-200 text-xs font-bold">
@@ -827,8 +916,10 @@ export default function ProductsPage() {
               <th className="p-3 w-28 font-bold">اللون</th>
               <th className="p-3 font-bold">المورد</th>
               <th className="p-3 text-center w-24 font-bold">الحالة</th>
-              <th className="p-3 text-center w-32 font-bold">المخزون الأولي</th>
-              <th className="p-3 text-center w-32 font-bold">الرصيد المتاح</th>
+              <th className="p-3 text-center w-28 font-bold">المخزون الأولي</th>
+              <th className="p-3 text-center w-36 font-bold text-emerald-800">
+                {selectedWarehouseFilter === 'ALL' ? 'الرصيد الكلي المتاح' : 'رصيد المخزن المحدد'}
+              </th>
               <th className="p-3 text-center w-28 font-bold">التكلفة</th>
               <th className="p-3 text-center w-28 font-bold">السعر</th>
               <th className="p-3 text-center w-24 font-bold">خصم تلقائي</th>
@@ -845,12 +936,17 @@ export default function ProductsPage() {
             ) : filteredProducts.length === 0 ? (
               <tr>
                 <td colSpan={11} className="p-12 text-center text-gray-400 font-bold">
-                  لا توجد أصناف مطابقة للبحث
+                  لا توجد أصناف مطابقة للبحث أو المخزن المختار
                 </td>
               </tr>
             ) : (
               filteredProducts.map((product, index) => {
                 const isChecked = selectedIds.includes(product.id)
+                
+                // حساب الرصيد حسب المخزن المختار أو الرصيد الكلي
+                const warehouseSpecificQty = selectedWarehouseFilter !== 'ALL'
+                  ? (product.warehouseStocks?.find((ws: any) => ws.warehouseId === selectedWarehouseFilter)?.quantity ?? 0)
+                  : product.currentStock
 
                 return (
                   <tr
@@ -897,9 +993,9 @@ export default function ProductsPage() {
                       {product.stockQty}
                     </td>
 
-                    {/* الرصيد المتاح (أخضر وواضح) */}
+                    {/* الرصيد المتاح */}
                     <td className="p-3 text-center font-mono font-black text-emerald-600 text-base">
-                      {product.currentStock}
+                      {warehouseSpecificQty}
                     </td>
 
                     <td className="p-3 text-center font-mono text-xs text-gray-800">

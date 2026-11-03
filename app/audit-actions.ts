@@ -10,10 +10,49 @@ interface AuditItemInput {
   actualStock: number
 }
 
-// 1. حفظ جرد جديد (متاح لجميع المستخدمين بما فيهم الموظفون)
+// دالة بحث مخصصة لشاشة الجرد تجلب تفصيل رصيد الصنف في كل مخزن
+export async function searchProductsForAudit(query: string) {
+  try {
+    if (!query || query.trim().length === 0) return []
+    const q = query.trim()
+
+    const products = await prisma.product.findMany({
+      where: {
+        OR: [
+          { modelNo: { contains: q, mode: 'insensitive' } },
+          { color: { contains: q, mode: 'insensitive' } },
+          { description: { contains: q, mode: 'insensitive' } },
+        ]
+      },
+      select: {
+        id: true,
+        modelNo: true,
+        color: true,
+        description: true,
+        currentStock: true,
+        cost: true,
+        warehouseStocks: {
+          select: {
+            warehouseId: true,
+            quantity: true
+          }
+        }
+      },
+      take: 25
+    })
+
+    return JSON.parse(JSON.stringify(products))
+  } catch (error) {
+    console.error('Error searching products for audit:', error)
+    return []
+  }
+}
+
+// 1. حفظ جرد جديد مع احتساب الرصيد الدفتري بحسب المخزن المختار
 export async function saveInventoryAudit(payload: {
   title?: string
   notes?: string
+  warehouseId?: string // إذا كان 'ALL' أو فارغاً يعتبر جرد شامل
   items: AuditItemInput[]
 }) {
   try {
@@ -26,28 +65,50 @@ export async function saveInventoryAudit(payload: {
       return { success: false, error: 'لا توجد أصناف في وثيقة الجرد' }
     }
 
+    const isAllWarehouses = !payload.warehouseId || payload.warehouseId === 'ALL'
+    const targetWhId = isAllWarehouses ? null : payload.warehouseId
+
     const productIds = payload.items.map(i => i.productId)
+    
+    // جلب المنتجات وتفاصيل مخزونها
     const products = await prisma.product.findMany({
       where: { id: { in: productIds } },
-      select: { id: true, currentStock: true, cost: true }
+      select: { 
+        id: true, 
+        currentStock: true, 
+        cost: true,
+        warehouseStocks: targetWhId ? {
+          where: { warehouseId: targetWhId },
+          select: { quantity: true }
+        } : false
+      }
     })
 
-    const productMap = new Map<string, { currentStock: number; cost: number }>()
-    products.forEach(p => productMap.set(p.id, { currentStock: p.currentStock, cost: p.cost }))
+    const productMap = new Map<string, { systemStock: number; cost: number }>()
+    products.forEach((p: any) => {
+      let sysStock = p.currentStock // الافتراضي هو الكلي
+      if (targetWhId && p.warehouseStocks && p.warehouseStocks.length > 0) {
+        sysStock = p.warehouseStocks[0].quantity || 0
+      } else if (targetWhId) {
+        sysStock = 0 // الصنف ليس له رصيد في هذا المخزن المحدد
+      }
+      productMap.set(p.id, { systemStock: sysStock, cost: p.cost })
+    })
 
     const audit = await prisma.$transaction(async (tx) => {
       const newAudit = await tx.inventoryAudit.create({
         data: {
-          title: payload.title || `جرد مخزني - ${new Date().toLocaleDateString('ar-EG')}`,
+          title: payload.title || (isAllWarehouses ? 'جرد شامل (كل المخازن)' : 'جرد فرعي'),
           notes: payload.notes || '',
+          warehouseId: targetWhId,
           userId: session.user.image as string,
           status: 'PENDING',
         }
       })
 
       for (const item of payload.items) {
-        const prodData = productMap.get(item.productId) || { currentStock: 0, cost: 0 }
-        const sysStock = prodData.currentStock
+        const prodData = productMap.get(item.productId) || { systemStock: 0, cost: 0 }
+        const sysStock = prodData.systemStock
         const actStock = Number(item.actualStock) || 0
         const diff = actStock - sysStock
 
@@ -67,6 +128,7 @@ export async function saveInventoryAudit(payload: {
     })
 
     revalidatePath('/admin/inventory-audits')
+    revalidatePath('/admin/warehouses')
 
     return {
       success: true,
@@ -79,12 +141,13 @@ export async function saveInventoryAudit(payload: {
   }
 }
 
-// 2. جلب سجل عمليات الجرد السابقة (للأدمن والمحاسب)
+// 2. جلب سجل عمليات الجرد السابقة
 export async function getInventoryAudits() {
   try {
     const audits = await prisma.inventoryAudit.findMany({
       include: {
         user: { select: { id: true, name: true, role: true } },
+        warehouse: { select: { id: true, name: true, code: true } },
         _count: { select: { items: true } }
       },
       orderBy: { createdAt: 'desc' }
@@ -97,16 +160,27 @@ export async function getInventoryAudits() {
   }
 }
 
-// 3. جلب تفاصيل جرد معين بكامل بنوده وفروقاته
+// 3. جلب تفاصيل جرد معين بكامل بنوده
 export async function getInventoryAuditDetails(auditId: string) {
   try {
     const audit = await prisma.inventoryAudit.findUnique({
       where: { id: auditId },
       include: {
         user: { select: { id: true, name: true, role: true } },
+        warehouse: { select: { id: true, name: true, code: true } },
         items: {
           include: {
-            product: { select: { id: true, modelNo: true, color: true, currentStock: true, cost: true, price: true } }
+            product: { 
+              select: { 
+                id: true, 
+                modelNo: true, 
+                color: true, 
+                currentStock: true, 
+                cost: true, 
+                price: true,
+                warehouseStocks: true
+              } 
+            }
           },
           orderBy: { createdAt: 'asc' }
         }
@@ -168,7 +242,7 @@ export async function updateInventoryAuditItems(auditId: string, items: { id: st
   }
 }
 
-// 5. تسوية وتعديل المخزون الحالي الفعلي فقط للأصناف المجرودة
+// 5. تسوية واعتماد الجرد وتعديل رصيد المخزن المحدد ورصيد الشركة العام
 export async function reconcileInventoryAudit(auditId: string) {
   try {
     const session = await getServerSession(authOptions)
@@ -189,14 +263,58 @@ export async function reconcileInventoryAudit(auditId: string) {
       return { success: false, error: 'تمت تسوية هذا الجرد مسبقاً بالفعل' }
     }
 
+    const isSpecificWarehouse = Boolean(audit.warehouseId)
+
     await prisma.$transaction(async (tx) => {
       for (const item of audit.items) {
-        await tx.product.update({
-          where: { id: item.productId },
-          data: {
-            currentStock: item.actualStock
-          }
-        })
+        if (isSpecificWarehouse && audit.warehouseId) {
+          // 1. جلب رصيد الصنف السابق في هذا المخزن لحساب فرق التعديل
+          const currentWhStock = await (tx as any).warehouseStock.findUnique({
+            where: {
+              warehouseId_productId: {
+                warehouseId: audit.warehouseId,
+                productId: item.productId
+              }
+            }
+          })
+
+          const oldQtyInThisWh = currentWhStock?.quantity || 0
+          const delta = item.actualStock - oldQtyInThisWh // مقدار الزيادة أو العجز في هذا المخزن
+
+          // 2. تحديث رصيد هذا المخزن برقم الجرد الفعلي
+          await (tx as any).warehouseStock.upsert({
+            where: {
+              warehouseId_productId: {
+                warehouseId: audit.warehouseId,
+                productId: item.productId
+              }
+            },
+            update: {
+              quantity: item.actualStock
+            },
+            create: {
+              warehouseId: audit.warehouseId,
+              productId: item.productId,
+              quantity: item.actualStock
+            }
+          })
+
+          // 3. تعديل رصيد الشركة العام (currentStock) بمقدار الفرق (delta)
+          await tx.product.update({
+            where: { id: item.productId },
+            data: {
+              currentStock: { increment: delta }
+            }
+          })
+        } else {
+          // جرد عام شامل لكل المخازن: تعديل رصيد الشركة المباشر
+          await tx.product.update({
+            where: { id: item.productId },
+            data: {
+              currentStock: item.actualStock
+            }
+          })
+        }
       }
 
       await tx.inventoryAudit.update({
@@ -210,11 +328,12 @@ export async function reconcileInventoryAudit(auditId: string) {
 
     revalidatePath('/admin/products')
     revalidatePath('/admin/inventory-audits')
+    revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
 
     return {
       success: true,
-      message: `تم بنجاح اعتماد الجرد رقم #${audit.auditNo} وتعديل الرصيد الفعلي لـ ${audit.items.length} صنف`
+      message: `تم بنجاح اعتماد الجرد رقم #${audit.auditNo} وتعديل رصيد المخزن والمخزون العام لـ ${audit.items.length} صنف`
     }
   } catch (error: any) {
     console.error('Error reconciling audit:', error)

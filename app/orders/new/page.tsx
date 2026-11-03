@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { getCustomers, getProductsForSearch, createOrder, getSafes, searchCustomers, checkCustomerPhone } from '@/app/actions';
 import { addCustomer } from '@/app/admin-actions'; 
+import { getWarehouses } from '@/app/warehouse-management-actions';
 import { useSession } from 'next-auth/react';
 import { useRouter, usePathname } from 'next/navigation';
 import { Scanner } from '@yudiel/react-qr-scanner';
@@ -31,6 +32,11 @@ export default function NewOrderPage() {
   
   const [step, setStep] = useState(1);
   const [safes, setSafes] = useState<Safe[]>([]);
+
+  // المخازن وتحديد مخزن الصرف
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('');
+
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
@@ -120,12 +126,24 @@ export default function NewOrderPage() {
 
   useEffect(() => {
     getCustomers().then(setCustomerResults);
+    
     getSafes().then((data: Safe[]) => {
       setSafes(data);
       if (data.length > 0) {
         const mainSafe = data.find(safe => safe.name === 'الخزنة الرئيسية');
         const defaultSafeId = mainSafe?.id || data[0].id;
         setDepositSplits([{ safeId: defaultSafeId, amount: 0 }]);
+      }
+    });
+
+    // جلب المخازن وتعيين المخزن الرئيسي افتراضياً
+    getWarehouses().then((resWh: any) => {
+      if (resWh?.success && resWh.warehouses) {
+        setWarehouses(resWh.warehouses);
+        const defaultWh = resWh.warehouses.find((w: any) => w.isDefault) || resWh.warehouses[0];
+        if (defaultWh) {
+          setSelectedWarehouseId(defaultWh.id);
+        }
       }
     });
     
@@ -144,28 +162,31 @@ export default function NewOrderPage() {
   }, []);
 
   useEffect(() => {
-    // This effect runs once after products are loaded to check for bulk data.
     if (isProductsLoading) {
-      return; // Do nothing if products are still loading.
+      return; 
     }
 
     const bulkDataString = sessionStorage.getItem('bulkOrderData');
     if (!bulkDataString) {
-      return; // No bulk data, do nothing.
+      return; 
     }
 
     try {
       const bulkData = JSON.parse(bulkDataString);
 
-      // 1. Set the customer
+      // 1. العميل
       if (bulkData.customer) {
         setSelectedCustomer(bulkData.customer);
         setCustomerSearchTerm(bulkData.customer.name);
       }
 
-      // 2. Build the cart from bulk items
+      // 2. المخزن المستلم من الإكسيل إن وجد
+      if (bulkData.warehouseId) {
+        setSelectedWarehouseId(bulkData.warehouseId);
+      }
+
+      // 3. الأصناف
       if (bulkData.items && Array.isArray(bulkData.items) && bulkData.items.length > 0) {
-        
         const groupedItems = bulkData.items.reduce((acc: any, item: any) => {
           const modelNo = item.modelNo;
           if (!acc[modelNo]) {
@@ -353,7 +374,7 @@ export default function NewOrderPage() {
 
     if (failedItems.length > 0) setFailedItems([]);
     setShowOnlyFailed(false);
-    setSearchTerm(''); // Clear search term after adding to cart
+    setSearchTerm(''); 
     return true;
   };
 
@@ -398,17 +419,14 @@ export default function NewOrderPage() {
   const handleEditItem = async (item: any) => {
     if (item.type === 'discount') return;
 
-    // Remove from cart
     setCart(cart => cart.filter(c => c.id !== item.id));
 
-    // Restore quantities to selectionMap for editing
     const restoredSelection: {[key: string]: number} = {};
     item.variants.forEach((v: any) => {
         restoredSelection[v.productId] = v.quantity;
     });
     setSelectionMap(prev => ({...prev, ...restoredSelection}));
 
-    // Focus on the model in search
     setSearchTerm(item.modelNo);
     window.scrollTo({ top: 0, behavior: 'smooth' });
     productSearchInputRef.current?.focus();
@@ -438,6 +456,11 @@ export default function NewOrderPage() {
 
   const handleSaveOrder = async () => {
     if(!session?.user) return;
+
+    if (!selectedWarehouseId) {
+      alert("يرجى اختيار مخزن الصرف / التسليم للأوردر!");
+      return;
+    }
     
     const cleanCart = getProcessedCart();
     const total = cleanCart.reduce((acc, item) => acc + item.totalLinePrice, 0);
@@ -470,6 +493,7 @@ export default function NewOrderPage() {
     try {
         const result = await createOrder({
           customerId: selectedCustomer.id,
+          warehouseId: selectedWarehouseId, // 👈 تمرير مخزن الصرف المختار
           items: cleanCart, 
           total, 
           deposit: depositVal, 
@@ -591,45 +615,81 @@ export default function NewOrderPage() {
       <div className="p-4 max-w-2xl mx-auto">
         {step === 1 && (
           <>
-            <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-100 relative" ref={customerListRef}>
-              <div className="flex justify-between items-center mb-2">
-                <label className="text-sm text-gray-500 font-bold">العميل</label>
-                <button onClick={() => setIsQuickAddOpen(true)} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg font-bold">➕ عميل جديد</button>
-              </div>
-              <div className="relative">
-                  <input 
-                    type="text" 
-                    placeholder="ابحث باسم العميل أو الهاتف..." 
-                    value={customerSearchTerm} 
-                    onChange={(e) => { 
-                        setCustomerSearchTerm(e.target.value); 
-                        setShowCustomerList(true); 
-                        if (e.target.value === '') setSelectedCustomer(null); 
-                    }} 
-                    onFocus={() => setShowCustomerList(true)} 
-                    className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none" 
-                  />
-                  {isSearchingCustomer && <span className="absolute left-3 top-3 text-gray-400 text-xs">جاري البحث...</span>}
+            {/* الصف العلوي: كارت العميل + كارت مخزن الصرف والتسليم جنباً إلى جنب */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+              
+              {/* 1. كارت اختيار العميل */}
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 relative" ref={customerListRef}>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-sm text-gray-500 font-bold">العميل</label>
+                  <button onClick={() => setIsQuickAddOpen(true)} className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-lg font-bold">➕ عميل جديد</button>
+                </div>
+                <div className="relative">
+                    <input 
+                      type="text" 
+                      placeholder="ابحث باسم العميل أو الهاتف..." 
+                      value={customerSearchTerm} 
+                      onChange={(e) => { 
+                          setCustomerSearchTerm(e.target.value); 
+                          setShowCustomerList(true); 
+                          if (e.target.value === '') setSelectedCustomer(null); 
+                      }} 
+                      onFocus={() => setShowCustomerList(true)} 
+                      className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" 
+                    />
+                    {isSearchingCustomer && <span className="absolute left-3 top-3 text-gray-400 text-xs">جاري البحث...</span>}
+                </div>
+
+                {showCustomerList && (
+                  <div className="absolute top-full left-0 right-0 bg-white border rounded-b-lg shadow-xl z-50 max-h-60 overflow-y-auto">
+                    {customerResults.length > 0 ? (
+                        customerResults.map(c => (
+                          <div key={c.id} onClick={() => { setSelectedCustomer(c); setCustomerSearchTerm(c.name); setShowCustomerList(false); }} 
+                               className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 ${c.source === 'QUICK' ? 'bg-purple-50' : ''}`}>
+                            <div className="font-bold flex justify-between items-center">
+                                <span>{c.name}</span>
+                                {c.source === 'QUICK' && <span className="text-[10px] bg-purple-600 text-white px-2 py-0.5 rounded shadow-sm">جديد ✨</span>}
+                            </div>
+                            <div className="text-xs text-gray-500">{c.phone} | {c.code}</div>
+                          </div>
+                        ))
+                    ) : (
+                        <div className="p-3 text-center text-gray-500 text-xs">لا توجد نتائج (اضغط عميل جديد للإضافة)</div>
+                    )}
+                  </div>
+                )}
               </div>
 
-              {showCustomerList && (
-                <div className="absolute top-full left-0 right-0 bg-white border rounded-b-lg shadow-xl z-50 max-h-60 overflow-y-auto">
-                  {customerResults.length > 0 ? (
-                      customerResults.map(c => (
-                        <div key={c.id} onClick={() => { setSelectedCustomer(c); setCustomerSearchTerm(c.name); setShowCustomerList(false); }} 
-                             className={`p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0 ${c.source === 'QUICK' ? 'bg-purple-50' : ''}`}>
-                          <div className="font-bold flex justify-between items-center">
-                              <span>{c.name}</span>
-                              {c.source === 'QUICK' && <span className="text-[10px] bg-purple-600 text-white px-2 py-0.5 rounded shadow-sm">جديد ✨</span>}
-                          </div>
-                          <div className="text-xs text-gray-500">{c.phone} | {c.code}</div>
-                        </div>
-                      ))
-                  ) : (
-                      <div className="p-3 text-center text-gray-500 text-xs">لا توجد نتائج (اضغط عميل جديد للإضافة)</div>
-                  )}
+              {/* 2. كارت اختيار مخزن الصرف / التسليم (المطلوب) */}
+              <div className="bg-white p-4 rounded-xl shadow-sm border-2 border-cyan-300 relative flex flex-col justify-between">
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-sm font-black text-cyan-950 flex items-center gap-1.5">
+                    <span>🏢</span>
+                    <span>مخزن الصرف / التسليم *</span>
+                  </label>
+                  <span className="text-[10px] bg-cyan-100 text-cyan-800 px-2 py-0.5 rounded-full font-bold">
+                    الافتراضي: الرئيسي
+                  </span>
                 </div>
-              )}
+
+                <div>
+                  <select
+                    value={selectedWarehouseId}
+                    onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                    className="w-full p-3 border-2 border-cyan-400 rounded-lg font-bold text-gray-800 bg-cyan-50/40 outline-none focus:border-cyan-600 cursor-pointer text-sm"
+                  >
+                    {warehouses.map(wh => (
+                      <option key={wh.id} value={wh.id}>
+                        {wh.name} {wh.isDefault ? '⭐ (المخزن الرئيسي)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-gray-500 mt-2 px-1 leading-tight">
+                    سيتم خصم كميات الأوردر من رصيد هذا المخزن تحديداً.
+                  </p>
+                </div>
+              </div>
+
             </div>
 
             {selectedCustomer && (
@@ -867,11 +927,29 @@ export default function NewOrderPage() {
         {step === 2 && (
           <div className="bg-white rounded-xl shadow-lg p-6 animate-fade-in">
             <h3 className="text-center font-bold text-xl mb-6 border-b pb-4">مراجعة الحساب</h3>
+            
             <div className="flex justify-between mb-4 text-sm bg-gray-50 p-3 rounded">
               <span className="text-gray-500 font-bold">العميل المختص:</span>
               <span className="font-bold text-blue-800">{selectedCustomer?.name}</span>
             </div>
-             <div className="flex justify-between items-center mb-4 text-sm bg-gray-50 p-3 rounded">
+
+            {/* عرض وتأكيد مخزن الصرف والتسليم في الخطوة 2 */}
+            <div className="flex justify-between items-center mb-4 text-sm bg-cyan-50 border border-cyan-200 p-3 rounded-xl">
+              <span className="text-cyan-900 font-bold">🏢 مخزن الصرف / التسليم:</span>
+              <select
+                value={selectedWarehouseId}
+                onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                className="bg-white border border-cyan-300 rounded-lg p-1.5 text-xs font-bold text-gray-800 outline-none cursor-pointer"
+              >
+                {warehouses.map(wh => (
+                  <option key={wh.id} value={wh.id}>
+                    {wh.name} {wh.isDefault ? '⭐ (الرئيسي)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex justify-between items-center mb-4 text-sm bg-gray-50 p-3 rounded">
                 <span className="text-gray-500 font-bold">تاريخ الأوردر:</span>
                 <input
                     type="date"
@@ -880,6 +958,7 @@ export default function NewOrderPage() {
                     className="font-bold text-blue-800 border-none bg-transparent text-right p-0 focus:ring-0"
                 />
             </div>
+
             <div className="space-y-4 mb-6 max-h-60 overflow-y-auto border p-2 rounded bg-slate-50">
               {getProcessedCart().map((item:any, idx) => (
                 <div key={idx} className="flex justify-between border-b border-dashed border-gray-300 pb-2 last:border-0 text-sm">

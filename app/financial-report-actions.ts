@@ -207,7 +207,7 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
       })
     })
 
-    // ✅ صافي إيراد المبيعات بعد خصم المرتجعات والخصم المسموح به
+    // صافي إيراد المبيعات بعد خصم المرتجعات والخصم المسموح به
     const netSalesRevenue = grossSalesRevenue - totalReturnsRevenue - totalDiscountsAllowed
     const netCOGS = grossCOGS - totalReturnsCost - totalDiscountsReceived
     const grossProfit = netSalesRevenue - netCOGS
@@ -231,7 +231,7 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
         sales: {
           grossSalesRevenue,
           totalReturnsRevenue,
-          totalDiscountsAllowed, // ✅ قيمة الخصم المسموح به
+          totalDiscountsAllowed,
           netSalesRevenue,
           totalPiecesSold,
           totalPiecesReturned,
@@ -345,25 +345,12 @@ export async function getBalanceSheet() {
     const fixedAssets = await prisma.fixedAsset.findMany({ where: { status: 'ACTIVE' } })
     const totalFixedAssetsValue = fixedAssets.reduce((sum, a) => sum + a.currentValue, 0)
 
+    // حساب التزامات الموردين الفعلية حصرياً بدون بضاعة المخزون
     const vendors = await prisma.vendor.findMany({
       include: {
-        products: { select: { stockQty: true, cost: true } },
         transactions: { select: { type: true, amount: true, reference: true, description: true } },
         payments: { where: { type: 'OUT' }, select: { amount: true, checkRefId: true, description: true } },
         checks: { where: { type: 'PAYABLE', status: { not: 'CANCELLED' } }, select: { amount: true, checkNo: true } }
-      }
-    })
-
-    const allProductsWithName = await prisma.product.findMany({
-      where: { vendorId: null, vendor: { not: null } },
-      select: { vendor: true, stockQty: true, cost: true }
-    })
-
-    const unlinkedProductsByVendorName = new Map<string, number>()
-    allProductsWithName.forEach(p => {
-      if (p.vendor) {
-        const amt = (p.stockQty || 0) * (p.cost || 0)
-        unlinkedProductsByVendorName.set(p.vendor.trim(), (unlinkedProductsByVendorName.get(p.vendor.trim()) || 0) + amt)
       }
     })
 
@@ -371,11 +358,6 @@ export async function getBalanceSheet() {
     let totalVendorDebtors = 0
 
     vendors.forEach(vendor => {
-      let initialStockTotal = vendor.products.reduce((s, p) => s + ((p.stockQty || 0) * (p.cost || 0)), 0)
-      if (unlinkedProductsByVendorName.has(vendor.name.trim())) {
-        initialStockTotal += unlinkedProductsByVendorName.get(vendor.name.trim())!
-      }
-
       const groupedTrans = new Map<string, { type: string, amount: number, description?: string | null }>()
       vendor.transactions.forEach(t => {
         const refKey = t.reference ? `${t.type}_${t.reference}` : `single_${Math.random()}`
@@ -387,6 +369,8 @@ export async function getBalanceSheet() {
       let returnsTotal = 0
       let transactionPayments = 0
       let refundsInTotal = 0
+      let openingCreditTotal = 0
+      let openingDebitTotal = 0
 
       groupedTrans.forEach((t, refKey) => {
         const isCashRefund = t.type === 'REFUND_IN' || 
@@ -394,10 +378,19 @@ export async function getBalanceSheet() {
                              refKey.includes('استرداد') || 
                              (t.description && t.description.includes('استرداد نقدي'));
 
-        if (isCashRefund) refundsInTotal += t.amount
-        else if (t.type === 'PURCHASE') purchasesTotal += t.amount
-        else if (t.type === 'RETURN') returnsTotal += t.amount
-        else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) transactionPayments += t.amount
+        if (t.type === 'OPENING_CREDIT') {
+          openingCreditTotal += t.amount
+        } else if (t.type === 'OPENING_DEBIT') {
+          openingDebitTotal += t.amount
+        } else if (isCashRefund) {
+          refundsInTotal += t.amount
+        } else if (t.type === 'PURCHASE') {
+          purchasesTotal += t.amount
+        } else if (t.type === 'RETURN') {
+          returnsTotal += t.amount
+        } else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) {
+          transactionPayments += t.amount
+        }
       })
 
       let cashPaymentsTotal = 0
@@ -415,8 +408,8 @@ export async function getBalanceSheet() {
         }
       })
 
-      const totalCredits = initialStockTotal + purchasesTotal + refundsInTotal
-      const totalDebits = returnsTotal + transactionPayments + cashPaymentsTotal + additionalChecksTotal
+      const totalCredits = openingCreditTotal + purchasesTotal + refundsInTotal
+      const totalDebits = openingDebitTotal + returnsTotal + transactionPayments + cashPaymentsTotal + additionalChecksTotal
       const bal = Math.round((totalCredits - totalDebits) * 100) / 100
 
       if (bal > 0) totalVendorPayables += bal

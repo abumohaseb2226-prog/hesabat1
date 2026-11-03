@@ -2,9 +2,11 @@
 import { useState, useEffect, useRef, use } from 'react';
 import { getOrderById, searchProducts, updateOrder, getSafes, searchCustomers } from '@/app/actions';
 import { addCustomer, updateOrderDate } from '@/app/admin-actions';
+import { getWarehouses } from '@/app/warehouse-management-actions';
 import { useRouter } from 'next/navigation';
 import { useSession } from 'next-auth/react';
 import { Scanner } from '@yudiel/react-qr-scanner';
+import Link from 'next/link';
 
 interface Safe {
   id: string;
@@ -16,7 +18,7 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
   const router = useRouter();
   const { data: session } = useSession();
 
-  // فحص صلاحية الأدمن أو صاحب العمل أو المحاسب
+  // فحص صلاحية الإدارة
   const userRole = session?.user?.role || 'EMPLOYEE';
   const canEditDate = ['ADMIN', 'OWNER', 'ACCOUNTANT'].includes(userRole);
   
@@ -25,6 +27,10 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
   const [isSaving, setIsSaving] = useState(false);
   const [safes, setSafes] = useState<Safe[]>([]);
   const [order, setOrder] = useState<any>(null);
+
+  // المخازن وتحديد مخزن الصرف
+  const [warehouses, setWarehouses] = useState<any[]>([]);
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('');
 
   // حالات التاريخ الجديد والأصلي
   const [orderDate, setOrderDate] = useState<string>('');
@@ -68,80 +74,97 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
   };
 
   useEffect(() => {
-    getSafes().then((fetchedSafes: Safe[]) => {
-        setSafes(fetchedSafes);
-        
-        getOrderById(id).then(res => {
-            if (!res) {
-                alert("لم يتم العثور على الأوردر!");
-                return router.push('/orders/list');
-            }
-            setOrder(res);
-            setSelectedCustomer(res.customer);
-            setCustomerSearchTerm(res.customer.name);
-            setDeposit(res.deposit.toString());
-            handleDepositChange(res.deposit.toString());
+    Promise.all([
+      getSafes(),
+      getWarehouses(),
+      getOrderById(id)
+    ]).then(([fetchedSafes, fetchedWarehouses, res]) => {
+      setSafes(fetchedSafes || []);
+      
+      let defaultWhId = '';
+      if (fetchedWarehouses?.success && fetchedWarehouses.warehouses) {
+        setWarehouses(fetchedWarehouses.warehouses);
+        const defaultWh = fetchedWarehouses.warehouses.find((w: any) => w.isDefault) || fetchedWarehouses.warehouses[0];
+        if (defaultWh) defaultWhId = defaultWh.id;
+      }
 
-            // ضبط تاريخ الأوردر بتنسيق YYYY-MM-DD
-            if (res.createdAt) {
-              const d = new Date(res.createdAt);
-              const year = d.getFullYear();
-              const month = String(d.getMonth() + 1).padStart(2, '0');
-              const day = String(d.getDate()).padStart(2, '0');
-              const localDateStr = `${year}-${month}-${day}`;
-              setOrderDate(localDateStr);
-              setOriginalOrderDate(localDateStr);
-            }
+      if (!res) {
+          alert("لم يتم العثور على الأوردر!");
+          return router.push('/orders/list');
+      }
 
-            if (res.depositSplits && res.depositSplits.length > 0) {
-              setDepositSplits(res.depositSplits);
-            } else if (res.deposit > 0) {
-              const mainSafe = fetchedSafes.find(safe => safe.id === res.safeId) || fetchedSafes.find(s => s.name === 'الخزنة الرئيسية') || fetchedSafes[0];
-              setDepositSplits([{ safeId: mainSafe.id, amount: res.deposit }])
-            }
+      setOrder(res);
+      setSelectedCustomer(res.customer);
+      setCustomerSearchTerm(res.customer.name);
+      setDeposit(res.deposit.toString());
+      handleDepositChange(res.deposit.toString());
 
-            setVoucherAmount((res.voucherAmount || '').toString());
-            if(res.voucherAmount > 0) setShowVoucherInput(true);
-            setNotes(res.notes || '');
-            
-            const initialCart: any[] = [];
-            const itemGroups: {[key: string]: any} = {};
-            
-            res.items.forEach((item: any) => {
-                const unitPrice = item.price;
-                const key = `${item.product.modelNo}|${unitPrice.toFixed(2)}|${item.discountPercent}`;
+      // تعيين المخزن المسجل في الأوردر أو الافتراضي
+      if (res.warehouseId) {
+        setSelectedWarehouseId(res.warehouseId);
+      } else if (defaultWhId) {
+        setSelectedWarehouseId(defaultWhId);
+      }
 
-                if (!itemGroups[key]) {
-                    itemGroups[key] = {
-                        type: 'product',
-                        id: Math.random(),
-                        modelNo: item.product.modelNo,
-                        baseDescription: item.product.description,
-                        unitPrice: unitPrice, 
-                        variants: [],
-                        discountPercent: item.discountPercent 
-                    };
-                }
-                itemGroups[key].variants.push({
-                    productId: item.productId,
-                    quantity: item.quantity,
-                    price: unitPrice, 
-                    color: item.product.color,
-                    productDiscount: item.product.discount
-                });
-            });
+      // ضبط تاريخ الأوردر
+      if (res.createdAt) {
+        const d = new Date(res.createdAt);
+        const year = d.getFullYear();
+        const month = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        const localDateStr = `${year}-${month}-${day}`;
+        setOrderDate(localDateStr);
+        setOriginalOrderDate(localDateStr);
+      }
 
-            Object.values(itemGroups).forEach((item: any) => {
-                if (item.discountPercent > 0) {
-                    initialCart.push({ type: 'discount', percent: item.discountPercent, id: Math.random(), isAuto: false });
-                }
-                item.totalQty = item.variants.reduce((s:any, v:any) => s + v.quantity, 0);
-                initialCart.push(item);
-            });
+      if (res.depositSplits && res.depositSplits.length > 0) {
+        setDepositSplits(res.depositSplits);
+      } else if (res.deposit > 0 && fetchedSafes?.length > 0) {
+        const mainSafe = fetchedSafes.find((safe: Safe) => safe.id === res.safeId) || fetchedSafes.find((s: Safe) => s.name === 'الخزنة الرئيسية') || fetchedSafes[0];
+        setDepositSplits([{ safeId: mainSafe.id, amount: res.deposit }]);
+      }
 
-            setCart(initialCart);
-            setLoading(false);
-        });
+      setVoucherAmount((res.voucherAmount || '').toString());
+      if(res.voucherAmount > 0) setShowVoucherInput(true);
+      setNotes(res.notes || '');
+      
+      const initialCart: any[] = [];
+      const itemGroups: {[key: string]: any} = {};
+      
+      res.items.forEach((item: any) => {
+          const unitPrice = item.price;
+          const key = `${item.product.modelNo}|${unitPrice.toFixed(2)}|${item.discountPercent}`;
+
+          if (!itemGroups[key]) {
+              itemGroups[key] = {
+                  type: 'product',
+                  id: Math.random(),
+                  modelNo: item.product.modelNo,
+                  baseDescription: item.product.description,
+                  unitPrice: unitPrice, 
+                  variants: [],
+                  discountPercent: item.discountPercent 
+              };
+          }
+          itemGroups[key].variants.push({
+              productId: item.productId,
+              quantity: item.quantity,
+              price: unitPrice, 
+              color: item.product.color,
+              productDiscount: item.product.discount
+          });
+      });
+
+      Object.values(itemGroups).forEach((item: any) => {
+          if (item.discountPercent > 0) {
+              initialCart.push({ type: 'discount', percent: item.discountPercent, id: Math.random(), isAuto: false });
+          }
+          item.totalQty = item.variants.reduce((s:any, v:any) => s + v.quantity, 0);
+          initialCart.push(item);
+      });
+
+      setCart(initialCart);
+      setLoading(false);
     });
   }, [id, router]);
 
@@ -320,6 +343,11 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
   };
 
   const handleUpdateOrder = async () => {
+    if (!selectedWarehouseId) {
+      alert("يرجى اختيار مخزن الصرف / التسليم للأوردر!");
+      return;
+    }
+
     setIsSaving(true);
     const processedItems = getProcessedCart();
     const currentTotal = processedItems.reduce((acc, item) => acc + item.totalLinePrice, 0);
@@ -342,6 +370,7 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
     
     const result = await updateOrder(id, {
         customerId: selectedCustomer.id,
+        warehouseId: selectedWarehouseId, // 👈 تمرير مخزن الصرف
         items: processedItems,
         total: currentTotal,
         deposit: depositVal,
@@ -352,7 +381,6 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
     });
     
     if (result.success) {
-        // تحديث التاريخ إن كان المستخدم أدمن وقام بتغيير التاريخ
         if (canEditDate && orderDate && orderDate !== originalOrderDate) {
           const dateRes = await updateOrderDate(id, orderDate);
           if (!dateRes.success) {
@@ -360,7 +388,7 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
           }
         }
 
-        alert("تم تحديث الأوردر بنجاح ✅");
+        alert("تم تحديث الأوردر وتحديث المخزن بنجاح ✅");
         router.push('/orders/list');
     } else {
         alert(`فشل التحديث: ${result.error}`);
@@ -395,54 +423,94 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
 
   return (
     <div className="min-h-screen bg-gray-50 pb-24 font-sans text-gray-800" dir="rtl">
+      
+      {/* Header */}
       <div className="bg-white p-4 shadow mb-4 sticky top-0 z-20 flex justify-between items-center border-b-4 border-yellow-500">
-        <h2 className="font-bold text-lg">{step === 1 ? `✏️ تعديل أوردر #${order.orderNo}` : '💰 مراجعة الحساب'}</h2>
-        {step === 2 && <button onClick={() => setStep(1)} className="text-sm text-blue-600 font-bold">تعديل الأصناف</button>}
+        <h2 className="font-bold text-lg">{step === 1 ? `✏️ تعديل أوردر #${order.orderNo}` : '💰 مراجعة الحساب وتأكيد الصرف'}</h2>
+        {step === 2 && <button onClick={() => setStep(1)} className="text-sm text-blue-600 font-bold hover:underline">← تعديل الأصناف</button>}
       </div>
 
       <div className="p-4 max-w-2xl mx-auto">
         {step === 1 && (
           <>
-            <div className="bg-white p-4 rounded-xl shadow-sm mb-6 border border-gray-100 relative">
-              <label className="text-sm text-gray-500 font-bold block mb-2">تعديل العميل المختص:</label>
-              <div className="relative">
-                  <input 
-                    type="text" 
-                    placeholder="ابحث باسم العميل الجديد أو الهاتف..." 
-                    value={customerSearchTerm} 
-                    onChange={(e) => { 
-                        setCustomerSearchTerm(e.target.value);
-                        setShowCustomerList(true); 
-                    }} 
-                    onFocus={() => setShowCustomerList(true)} 
-                    className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-800" 
-                  />
-                  {isSearchingCustomer && <span className="absolute left-3 top-3 text-gray-400 text-xs">جاري البحث...</span>}
+            {/* الصف العلوي: كارت العميل + كارت مخزن الصرف والتسليم جنباً إلى جنب */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-6">
+              
+              {/* 1. كارت اختيار العميل */}
+              <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-100 relative">
+                <label className="text-sm text-gray-500 font-bold block mb-2">تعديل العميل المختص:</label>
+                <div className="relative">
+                    <input 
+                      type="text" 
+                      placeholder="ابحث باسم العميل أو الهاتف..." 
+                      value={customerSearchTerm} 
+                      onChange={(e) => { 
+                          setCustomerSearchTerm(e.target.value);
+                          setShowCustomerList(true); 
+                      }} 
+                      onFocus={() => setShowCustomerList(true)} 
+                      className="w-full p-2.5 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none font-bold text-blue-800 text-sm" 
+                    />
+                    {isSearchingCustomer && <span className="absolute left-2.5 top-2.5 text-gray-400 text-xs">جاري البحث...</span>}
+                </div>
+
+                {showCustomerList && customerResults.length > 0 && (
+                  <div className="absolute top-full left-0 right-0 bg-white border-2 border-blue-400 rounded-b-xl shadow-2xl z-50 max-h-56 overflow-y-auto mt-1 divide-y divide-gray-100">
+                    {customerResults.map(c => (
+                      <div 
+                        key={c.id} 
+                        onClick={() => { 
+                            setSelectedCustomer(c); 
+                            setCustomerSearchTerm(c.name); 
+                            setShowCustomerList(false); 
+                        }} 
+                        className="p-3 hover:bg-blue-50 cursor-pointer flex justify-between items-center text-xs"
+                      >
+                        <div>
+                          <div className="font-bold text-gray-800 text-sm">{c.name}</div>
+                          <div className="text-gray-500">{c.phone} | {c.code}</div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
-              {showCustomerList && customerResults.length > 0 && (
-                <div className="absolute top-full left-0 right-0 bg-white border rounded-b-lg shadow-xl z-50 max-h-60 overflow-y-auto">
-                  {customerResults.map(c => (
-                    <div 
-                      key={c.id} 
-                      onClick={() => { 
-                          setSelectedCustomer(c); 
-                          setCustomerSearchTerm(c.name); 
-                          setShowCustomerList(false); 
-                      }} 
-                      className="p-3 hover:bg-blue-50 cursor-pointer border-b last:border-0"
-                    >
-                      <div className="font-bold text-gray-800">{c.name}</div>
-                      <div className="text-xs text-gray-500">{c.phone} | {c.code}</div>
-                    </div>
-                  ))}
+              {/* 2. كارت اختيار مخزن الصرف / التسليم (المطلوب في الشاشة 1) */}
+              <div className="bg-white p-4 rounded-xl shadow-sm border-2 border-cyan-300 relative flex flex-col justify-between">
+                <div className="flex justify-between items-center mb-2">
+                  <label className="text-sm font-black text-cyan-950 flex items-center gap-1.5">
+                    <span>🏢</span>
+                    <span>مخزن الصرف / التسليم *</span>
+                  </label>
+                  <span className="text-[10px] bg-cyan-100 text-cyan-800 px-2 py-0.5 rounded-full font-bold">
+                    {order.warehouseId ? 'مخزن الأوردر' : 'الافتراضي: الرئيسي'}
+                  </span>
                 </div>
-              )}
+
+                <div>
+                  <select
+                    value={selectedWarehouseId}
+                    onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                    className="w-full p-2.5 border-2 border-cyan-400 rounded-lg font-bold text-gray-800 bg-cyan-50/40 outline-none focus:border-cyan-600 cursor-pointer text-sm"
+                  >
+                    {warehouses.map(wh => (
+                      <option key={wh.id} value={wh.id}>
+                        {wh.name} {wh.isDefault ? '⭐ (المخزن الرئيسي)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-gray-500 mt-1.5 leading-tight">
+                    المخزن الذي تخرج منه بضاعة هذا الأوردر.
+                  </p>
+                </div>
+              </div>
+
             </div>
 
             <div className="relative mb-4 flex gap-2">
-              <input type="text" placeholder="🔍 إضافة أصناف..." className="flex-1 p-4 border rounded-xl shadow-sm text-lg outline-none focus:ring-2 focus:ring-blue-500" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-              <button onClick={() => setShowScanner(true)} className="bg-black text-white p-4 rounded-xl shadow-sm">📷</button>
+              <input type="text" placeholder="🔍 إضافة أصناف..." className="flex-1 p-4 border rounded-xl shadow-sm text-lg outline-none focus:ring-2 focus:ring-blue-500 font-bold" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+              <button onClick={() => setShowScanner(true)} className="bg-black text-white p-4 rounded-xl shadow-sm text-xl">📷</button>
             </div>
 
             {showScanner && (
@@ -578,12 +646,29 @@ export default function EditOrderPage({ params }: { params: Promise<{ id: string
 
         {step === 2 && (
           <div className="bg-white rounded-xl shadow-lg p-6 animate-fade-in">
-            <h3 className="text-center font-bold text-xl mb-6 border-b pb-4">مراجعة الحساب قبل الحفظ</h3>
+            <h3 className="text-center font-bold text-xl mb-6 border-b pb-4">مراجعة الحساب وتأكيد الصرف</h3>
 
             <div className="bg-slate-900 text-white p-5 rounded-2xl mb-6 shadow-md">
                <div className="flex justify-between text-lg mb-4 border-b border-slate-700 pb-2"><span>صافي الفاتورة:</span><span className="font-bold text-yellow-400 text-2xl">{currentTotal.toFixed(2)}</span></div>
                
-               {/* 📅 تعديل تاريخ الأوردر (متاح للإدارة/الأدمن فقط ومقفل للموظف) */}
+               {/* 🏢 اختيار مخزن الصرف / التسليم في الخطوة 2 */}
+               <div className="mb-4">
+                  <label className="block text-cyan-400 text-sm mb-2 font-bold">🏢 مخزن الصرف / التسليم:</label>
+                  <select
+                    value={selectedWarehouseId}
+                    onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                    className="w-full p-3.5 rounded-xl bg-slate-800 text-white font-bold text-base outline-none border-2 border-cyan-500/50 focus:border-cyan-400 transition"
+                  >
+                    {warehouses.map(wh => (
+                      <option key={wh.id} value={wh.id}>
+                        {wh.name} {wh.isDefault ? '⭐ (المخزن الرئيسي)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-slate-400 mt-1">سيتم خصم وتعديل كميات الأصناف من رصيد هذا المخزن تحديداً.</p>
+               </div>
+
+               {/* 📅 تعديل تاريخ الأوردر */}
                <div className="mb-4">
                   <div className="flex justify-between items-center mb-2">
                     <label className="block text-slate-400 text-sm font-bold">📅 تاريخ الأوردر / الفاتورة:</label>

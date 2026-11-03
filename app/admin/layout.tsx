@@ -18,6 +18,7 @@ import {
   DocumentDuplicateIcon,
   CreditCardIcon,
   BuildingOffice2Icon,
+  BuildingOfficeIcon,
   ChartPieIcon,
   BookOpenIcon
 } from '@heroicons/react/24/outline';
@@ -64,14 +65,19 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               <HomeIcon className="w-5 h-5" /> <span className="hidden lg:inline">الرئيسية</span>
             </Link>
             
-            {/* زر قيود اليومية المباشر في النافبار */}
+            {/* قيود اليومية */}
             <Link href="/admin/journal-entries" className="px-3 py-2 rounded-xl bg-amber-600/30 text-amber-300 hover:bg-amber-600 hover:text-white transition-colors flex items-center gap-2 border border-amber-500/40">
               <BookOpenIcon className="w-5 h-5" /> <span className="hidden lg:inline">قيود اليومية</span>
             </Link>
 
-            {/* القوائم المالية والأرباح وشجرة الحسابات والتدفقات */}
+            {/* القوائم المالية */}
             <Link href="/admin/reports/financial" className="px-3 py-2 rounded-xl bg-emerald-600/30 text-emerald-300 hover:bg-emerald-600 hover:text-white transition-colors flex items-center gap-2 border border-emerald-500/40">
               <ChartPieIcon className="w-5 h-5" /> <span className="hidden lg:inline">القوائم المالية</span>
+            </Link>
+
+            {/* إدارة المخازن (الزر الجديد المضاف) */}
+            <Link href="/admin/warehouses" className="px-3 py-2 rounded-xl bg-cyan-600/30 text-cyan-300 hover:bg-cyan-600 hover:text-white transition-colors flex items-center gap-2 border border-cyan-500/40">
+              <BuildingOfficeIcon className="w-5 h-5" /> <span className="hidden lg:inline">المخازن</span>
             </Link>
 
             {/* فاتورة المشتريات */}
@@ -84,7 +90,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
               <DocumentDuplicateIcon className="w-5 h-5" /> <span className="hidden lg:inline">الشيكات</span>
             </Link>
 
-            {/* الدائنون والمدينون والقروض */}
+            {/* الدائنون والمدينون */}
             <Link href="/admin/debtors-creditors" className="px-3 py-2 rounded-xl bg-indigo-600/20 text-indigo-300 hover:bg-indigo-600 hover:text-white transition-colors flex items-center gap-2 border border-indigo-500/30">
               <CreditCardIcon className="w-5 h-5" /> <span className="hidden lg:inline">الدائنون والمدينون</span>
             </Link>

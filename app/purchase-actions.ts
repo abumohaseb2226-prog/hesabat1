@@ -19,6 +19,7 @@ interface PurchaseInvoicePayload {
   invoiceType: 'PURCHASE' | 'RETURN'
   paymentStatus: 'CREDIT' | 'CASH'
   safeId?: string
+  warehouseId?: string
   invoiceNo?: string
   date?: string
   notes?: string
@@ -42,7 +43,31 @@ async function checkAuthorizedUser() {
   return user
 }
 
-// إنشاء فاتورة مشتريات / مرتجع جديدة
+// دالة مساعدة لجلب أو إنشاء المخزن الرئيسي الافتراضي
+async function getTargetWarehouse(tx: any, preferredWarehouseId?: string) {
+  if (preferredWarehouseId) {
+    const wh = await tx.warehouse.findUnique({ where: { id: preferredWarehouseId } })
+    if (wh) return wh
+  }
+
+  let defaultWh = await tx.warehouse.findFirst({ where: { isDefault: true } })
+  if (!defaultWh) {
+    defaultWh = await tx.warehouse.findFirst({ where: { name: 'المخزن الرئيسي' } })
+  }
+  if (!defaultWh) {
+    defaultWh = await tx.warehouse.create({
+      data: {
+        name: 'المخزن الرئيسي',
+        code: 'WH-01',
+        location: 'المقر الرئيسي / المصنع',
+        isDefault: true
+      }
+    })
+  }
+  return defaultWh
+}
+
+// إنشاء فاتورة مشتريات / مرتجع جديدة وتحديث رصيد المخزن تلقائياً
 export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
   try {
     const user = await checkAuthorizedUser()
@@ -124,7 +149,10 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
         const isPurchase = data.invoiceType === 'PURCHASE'
         const transType = isPurchase ? 'PURCHASE' : 'RETURN'
 
-        // 1. إنشاء الفاتورة الأساسية في جدول PurchaseInvoice
+        // جلب المخزن المستهدف (الرئيسي تلقائياً)
+        const targetWarehouse = await getTargetWarehouse(tx, data.warehouseId)
+
+        // 1. إنشاء الفاتورة الأساسية
         const purchaseInvoice = await tx.purchaseInvoice.create({
           data: {
             invoiceNo: invoiceNumber,
@@ -139,7 +167,7 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
           }
         })
 
-        // 2. تحديث المخزون الفعلي فقط للأصناف (عدم لمس stockQty الرصيد الافتتاحي)
+        // 2. تحديث المخزون الفعلي ومخزون المستودع (WarehouseStock)
         for (const item of finalItems) {
           let product = await tx.product.findUnique({
             where: {
@@ -150,7 +178,6 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
           const stockChange = isPurchase ? item.quantity : -item.quantity
 
           if (product) {
-            // صنف موجود مسبقاً: نزيد الرصيد الفعلي الحالي فقط
             product = await tx.product.update({
               where: { id: product.id },
               data: {
@@ -162,13 +189,12 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
               }
             })
           } else {
-            // صنف جديد دخل من فاتورة المشتريات: رصيده الافتتاحي صفر
             product = await tx.product.create({
               data: {
                 modelNo: item.modelNo,
                 color: item.color,
-                stockQty: 0, // ✅ الرصيد الافتتاحي صفر دائماً لفواتير الشراء
-                currentStock: stockChange, // الرصيد المتاح هو كمية الفاتورة
+                stockQty: 0,
+                currentStock: stockChange,
                 cost: item.cost,
                 price: item.price,
                 vendor: vendor.name,
@@ -187,6 +213,24 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
               cost: item.cost,
               price: item.price,
               description: item.description || ''
+            }
+          })
+
+          // تحديث رصيد الصنف داخل المخزن المستهدف (WarehouseStock)
+          await tx.warehouseStock.upsert({
+            where: {
+              warehouseId_productId: {
+                warehouseId: targetWarehouse.id,
+                productId: product.id
+              }
+            },
+            update: {
+              quantity: { increment: stockChange }
+            },
+            create: {
+              warehouseId: targetWarehouse.id,
+              productId: product.id,
+              quantity: Math.max(0, stockChange)
             }
           })
         }
@@ -245,13 +289,14 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
     revalidatePath('/admin/vendors')
     revalidatePath(`/admin/vendors/${vendor.id}`)
     revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
 
     return {
       success: true,
       message: data.invoiceType === 'PURCHASE' 
-        ? `تم حفظ فاتورة المشتريات رقم #${invoiceNumber} بنجاح` 
-        : `تم حفظ مرتجع المشتريات رقم #${invoiceNumber} بنجاح`
+        ? `تم حفظ فاتورة المشتريات رقم #${invoiceNumber} وتوريدها للمخزن بنجاح` 
+        : `تم حفظ مرتجع المشتريات رقم #${invoiceNumber} وخصمها من المخزن بنجاح`
     }
   } catch (error: any) {
     console.error('Error creating purchase invoice:', error)
@@ -259,7 +304,7 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
   }
 }
 
-// استرجاع تفاصيل بنود الفاتورة بالكامل من الجدول المخصص لها للتعديل
+// استرجاع تفاصيل بنود الفاتورة
 export async function getPurchaseInvoiceDetails(invoiceNumber: string) {
   try {
     await checkAuthorizedUser()
@@ -338,7 +383,7 @@ export async function getPurchaseInvoiceDetails(invoiceNumber: string) {
   }
 }
 
-// تحديث بنود الفاتورة وإعادة وزن المخزون والنقدية بدقة تامة
+// تحديث بنود الفاتورة وإعادة وزن المخزون الكلي ومخزن المستودع
 export async function updatePurchaseInvoice(invoiceNumber: string, data: PurchaseInvoicePayload) {
   try {
     const user = await checkAuthorizedUser()
@@ -357,6 +402,8 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
     const invoiceDate = data.date ? new Date(data.date) : new Date()
 
     await prisma.$transaction(async (tx) => {
+      const targetWarehouse = await getTargetWarehouse(tx, data.warehouseId)
+
       // 1. عكس الأثر القديم للمخزون
       if (oldInvoice) {
         const isOldPurchase = oldInvoice.invoiceType === 'PURCHASE'
@@ -364,9 +411,11 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
           const delta = isOldPurchase ? -it.quantity : it.quantity
           await tx.product.update({
             where: { id: it.productId },
-            data: {
-              currentStock: { increment: delta }
-            }
+            data: { currentStock: { increment: delta } }
+          })
+          await tx.warehouseStock.updateMany({
+            where: { productId: it.productId, warehouseId: targetWarehouse.id },
+            data: { quantity: { increment: delta } }
           })
         }
       } else {
@@ -377,6 +426,10 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
             await tx.product.update({
               where: { id: t.productId },
               data: { currentStock: { increment: delta } }
+            })
+            await tx.warehouseStock.updateMany({
+              where: { productId: t.productId, warehouseId: targetWarehouse.id },
+              data: { quantity: { increment: delta } }
             })
           }
         }
@@ -439,7 +492,7 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
             data: {
               modelNo,
               color,
-              stockQty: 0, // ✅ دائماً صفر
+              stockQty: 0,
               currentStock: stockChange,
               cost,
               price,
@@ -458,6 +511,24 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
             cost: cost,
             price: price,
             description: item.description || ''
+          }
+        })
+
+        // تحديث رصيد الصنف بالمخزن المستهدف
+        await tx.warehouseStock.upsert({
+          where: {
+            warehouseId_productId: {
+              warehouseId: targetWarehouse.id,
+              productId: product.id
+            }
+          },
+          update: {
+            quantity: { increment: stockChange }
+          },
+          create: {
+            warehouseId: targetWarehouse.id,
+            productId: product.id,
+            quantity: Math.max(0, stockChange)
           }
         })
       }
@@ -503,16 +574,17 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
     revalidatePath('/admin/vendors')
     revalidatePath(`/admin/vendors/${vendor.id}`)
     revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
 
-    return { success: true, message: `تم تحديث بنود الفاتورة #${invoiceNumber} بنجاح` }
+    return { success: true, message: `تم تحديث بنود الفاتورة #${invoiceNumber} والمخزون بنجاح` }
   } catch (error: any) {
     console.error('Error updating purchase invoice:', error)
     return { success: false, error: error.message || 'فشل تحديث الفاتورة' }
   }
 }
 
-// دالة حذف وإلغاء فاتورة المشتريات أو المرتجع وعكس أثر المخزون
+// دالة حذف وإلغاء فاتورة المشتريات أو المرتجع وعكس أثر المخزون العام ومخزن المستودع
 export async function cancelVendorInvoice(invoiceNumber: string) {
   try {
     await checkAuthorizedUser()
@@ -523,15 +595,19 @@ export async function cancelVendorInvoice(invoiceNumber: string) {
     })
 
     await prisma.$transaction(async (tx) => {
+      const targetWarehouse = await getTargetWarehouse(tx)
+
       if (invoice) {
         const isPurchase = invoice.invoiceType === 'PURCHASE'
         for (const it of invoice.items) {
           const delta = isPurchase ? -it.quantity : it.quantity
           await tx.product.update({
             where: { id: it.productId },
-            data: {
-              currentStock: { increment: delta }
-            }
+            data: { currentStock: { increment: delta } }
+          })
+          await tx.warehouseStock.updateMany({
+            where: { productId: it.productId, warehouseId: targetWarehouse.id },
+            data: { quantity: { increment: delta } }
           })
         }
         await tx.purchaseInvoice.delete({ where: { id: invoice.id } })
@@ -544,6 +620,10 @@ export async function cancelVendorInvoice(invoiceNumber: string) {
               where: { id: t.productId },
               data: { currentStock: { increment: delta } }
             })
+            await tx.warehouseStock.updateMany({
+              where: { productId: t.productId, warehouseId: targetWarehouse.id },
+              data: { quantity: { increment: delta } }
+            })
           }
         }
       }
@@ -555,6 +635,7 @@ export async function cancelVendorInvoice(invoiceNumber: string) {
     revalidatePath('/admin/products')
     revalidatePath('/admin/vendors')
     revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
 
     return { success: true, message: `تم إلغاء وحذف الفاتورة #${invoiceNumber} وعكس أثر المخزون والنقدية بنجاح` }

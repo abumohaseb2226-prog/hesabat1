@@ -23,6 +23,7 @@ interface PendingBazaarOrder {
   items: BazaarOrderItem[]
   totalAmount: number
   paymentSplits: PaymentSplit[]
+  warehouseId?: string
   notes?: string
   createdAt?: string
 }
@@ -71,7 +72,7 @@ export async function getBazaarProductsCatalog() {
   }
 }
 
-// تهيئة عميل وخزنة البازار الافتراضية مع جلب كل الخزن المتاحة
+// تهيئة عميل وخزنة ومخزن البازار الافتراضي مع جلب كل الخزن والمخازن المتاحة
 export async function getOrCreateBazaarDefaults() {
   try {
     let customer = await prisma.customer.findFirst({
@@ -101,9 +102,32 @@ export async function getOrCreateBazaarDefaults() {
       })
     }
 
-    const allSafes = await prisma.safe.findMany({
-      orderBy: { name: 'asc' }
+    // المخزن الرئيسي الافتراضي
+    let defaultWarehouse = await (prisma as any).warehouse.findFirst({
+      where: { isDefault: true }
     })
+
+    if (!defaultWarehouse) {
+      defaultWarehouse = await (prisma as any).warehouse.findFirst({
+        where: { name: 'المخزن الرئيسي' }
+      })
+    }
+
+    if (!defaultWarehouse) {
+      defaultWarehouse = await (prisma as any).warehouse.create({
+        data: {
+          name: 'المخزن الرئيسي',
+          code: 'WH-01',
+          location: 'المقر الرئيسي / المصنع',
+          isDefault: true
+        }
+      })
+    }
+
+    const [allSafes, allWarehouses] = await Promise.all([
+      prisma.safe.findMany({ orderBy: { name: 'asc' } }),
+      (prisma as any).warehouse.findMany({ orderBy: [{ isDefault: 'desc' }, { name: 'asc' }] })
+    ])
 
     return {
       success: true,
@@ -111,7 +135,10 @@ export async function getOrCreateBazaarDefaults() {
       customerName: customer.name,
       defaultSafeId: defaultSafe.id,
       defaultSafeName: defaultSafe.name,
-      allSafes: JSON.parse(JSON.stringify(allSafes))
+      defaultWarehouseId: defaultWarehouse.id,
+      defaultWarehouseName: defaultWarehouse.name,
+      allSafes: JSON.parse(JSON.stringify(allSafes)),
+      allWarehouses: JSON.parse(JSON.stringify(allWarehouses))
     }
   } catch (error: any) {
     console.error('Error getting bazaar defaults:', error)
@@ -119,15 +146,16 @@ export async function getOrCreateBazaarDefaults() {
   }
 }
 
-// حفظ مجموعة الأوردرات دفعة واحدة مع دعم التوزيع على الخزن والكميات السالبة
+// حفظ مجموعة الأوردرات دفعة واحدة مع خصم البضاعة من المخزن المحدد
 export async function saveBulkBazaarOrders(payload: {
   orders: PendingBazaarOrder[]
   userId: string
   customerId: string
   defaultSafeId: string
+  defaultWarehouseId?: string
 }) {
   try {
-    const { orders, userId, customerId, defaultSafeId } = payload
+    const { orders, userId, customerId, defaultSafeId, defaultWarehouseId } = payload
 
     if (!orders || orders.length === 0) {
       return { success: false, error: 'لا توجد أوردرات معلقة للحفظ' }
@@ -136,17 +164,27 @@ export async function saveBulkBazaarOrders(payload: {
     const createdOrderNumbers: number[] = []
 
     await prisma.$transaction(async (tx) => {
+      // تحديد المخزن الافتراضي في حال عدم تحديده
+      let fallbackWarehouseId = defaultWarehouseId
+      if (!fallbackWarehouseId) {
+        const defWh = await (tx as any).warehouse.findFirst({ where: { isDefault: true } })
+          || await (tx as any).warehouse.findFirst({ where: { name: 'المخزن الرئيسي' } })
+        fallbackWarehouseId = defWh?.id
+      }
+
       for (const ord of orders) {
         if (!ord.items || ord.items.length === 0) continue
 
         const primarySafeId = ord.paymentSplits?.[0]?.safeId || defaultSafeId
+        const orderWarehouseId = ord.warehouseId || fallbackWarehouseId
 
-        // 1. إنشاء الأوردر
+        // 1. إنشاء الأوردر وربطه بالمخزن
         const newOrder = await tx.order.create({
           data: {
             userId,
             customerId,
             safeId: primarySafeId,
+            warehouseId: orderWarehouseId || null,
             totalAmount: ord.totalAmount,
             deposit: ord.totalAmount, // خالص الحساب
             currency: 'EGP',
@@ -164,7 +202,7 @@ export async function saveBulkBazaarOrders(payload: {
 
         createdOrderNumbers.push(newOrder.orderNo)
 
-        // 2. تحديث المخزون
+        // 2. تحديث المخزون العام (currentStock) ورصيد المخزن المحدد (WarehouseStock)
         for (const it of ord.items) {
           await tx.product.update({
             where: { id: it.productId },
@@ -172,6 +210,25 @@ export async function saveBulkBazaarOrders(payload: {
               currentStock: { decrement: it.quantity }
             }
           })
+
+          if (orderWarehouseId) {
+            await (tx as any).warehouseStock.upsert({
+              where: {
+                warehouseId_productId: {
+                  warehouseId: orderWarehouseId,
+                  productId: it.productId
+                }
+              },
+              update: {
+                quantity: { decrement: it.quantity }
+              },
+              create: {
+                warehouseId: orderWarehouseId,
+                productId: it.productId,
+                quantity: -it.quantity
+              }
+            })
+          }
         }
 
         // 3. إنشاء حركات الخزنة حسب التوزيع
@@ -215,6 +272,8 @@ export async function saveBulkBazaarOrders(payload: {
     revalidatePath('/')
     revalidatePath('/orders/list')
     revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/warehouses')
+    revalidatePath('/admin/products')
     revalidatePath('/admin/reports')
     revalidatePath('/admin/reports/bazaar')
     revalidatePath('/today-summary')
@@ -223,7 +282,7 @@ export async function saveBulkBazaarOrders(payload: {
       success: true,
       count: createdOrderNumbers.length,
       orderNumbers: createdOrderNumbers,
-      message: `تم بنجاح حفظ ${createdOrderNumbers.length} أوردر وتوزيع النقدية وتحديث المخزون بدقة.`
+      message: `تم بنجاح حفظ ${createdOrderNumbers.length} أوردر وخصم البضاعة من المخزن المحدد وتحديث الخزائن بدقة.`
     }
   } catch (error: any) {
     console.error('Error saving bulk bazaar orders:', error)
@@ -231,9 +290,7 @@ export async function saveBulkBazaarOrders(payload: {
   }
 }
 
-// =========================================================================
-// تقرير البازار الشامل (مطابق 100% مع دفتر أستاذ الخزينة والمصروفات)
-// =========================================================================
+// تقرير البازار الشامل
 export async function getBazaarReport(startDateStr?: string, endDateStr?: string) {
   try {
     await checkAuthorizedUser()
@@ -248,12 +305,10 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
     const endDate = new Date(endStr)
     endDate.setHours(23, 59, 59, 999)
 
-    // جلب معرف "خزنة البازار"
     const bazaarSafe = await prisma.safe.findFirst({
       where: { name: 'خزنة البازار' }
     })
 
-    // 1. جلب فواتير البازار في الفترة المحددة
     const orders = await prisma.order.findMany({
       where: {
         createdAt: { gte: startDate, lte: endDate },
@@ -266,6 +321,7 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
       include: {
         user: { select: { id: true, name: true, code: true } },
         safe: true,
+        warehouse: { select: { id: true, name: true } },
         items: {
           include: {
             product: { select: { modelNo: true, color: true } }
@@ -275,7 +331,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
       orderBy: { createdAt: 'desc' }
     })
 
-    // 2. جلب جميع أرقام أوردرات البازار الموجودة فعلياً في النظام
     const allExistingBazaarOrders = await prisma.order.findMany({
       where: {
         OR: [
@@ -288,9 +343,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
     })
     const existingOrderNos = new Set(allExistingBazaarOrders.map(o => o.orderNo))
 
-    // 3. جلب جميع الحركات النقدية:
-    // - أي حركة تمت على خزنة البازار (سواء إيراد، أو مصروفات نقدية، أو مرتجعات)
-    // - أو أي حركة تخص عميل البازار أو مبيعات البازار في خزن أخرى (فودافون كاش، انستا باي)
     const paymentsOrConditions: any[] = [
       { customer: { name: 'البازار' } },
       { customer: { source: 'BAZAAR' } },
@@ -315,37 +367,31 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
       orderBy: { createdAt: 'desc' }
     })
 
-    // 4. تصفية الحركات: استبعاد وحذف أي حركة لأوردر بيع تم حذفه سابقاً
-    // مع الإبقاء الكامل على المصروفات وسندات الصرف العامة التي تمت على خزنة البازار
     const orphanedPaymentIds: string[] = []
     const validPayments = payments.filter(pay => {
-      // فقط إذا كان السند يشير إلى رقم أوردر بازار محدد (#123)
       const match = pay.description?.match(/#(\d+)/)
       if (match && (pay.description?.includes('أوردر') || pay.description?.includes('فاتورة'))) {
         const orderNo = parseInt(match[1], 10)
         const orderExists = existingOrderNos.has(orderNo)
         if (!orderExists) {
           orphanedPaymentIds.push(pay.id)
-          return false // استبعاد من التقرير فوراً
+          return false
         }
       }
       return true
     })
 
-    // تنظيف تلقائي في الخلفية لحذف السندات المعلقة للأوردرات المحذوفة
     if (orphanedPaymentIds.length > 0) {
       await prisma.payment.deleteMany({
         where: { id: { in: orphanedPaymentIds } }
       }).catch(err => console.error('Error cleaning up orphaned payments:', err))
     }
 
-    // 5. الإجماليات العامة وتفصيل الخزن
     const totalOrdersCount = orders.length
     const totalSalesAmount = orders.reduce((sum, o) => sum + o.totalAmount, 0)
     const totalPiecesCount = orders.reduce((sum, o) => sum + o.items.reduce((s, it) => s + it.quantity, 0), 0)
 
     const safesMap: { [safeName: string]: any } = {}
-
     let totalCashIn = 0
     let totalCashOut = 0
 
@@ -359,12 +405,11 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
       } else if (pay.type === 'OUT') {
         outAmt = pay.amount
       } else if (pay.type === 'TRANSFER') {
-        // في حالة التحويل بين الخزن
         if (bazaarSafe && pay.safeId === bazaarSafe.id) {
-          outAmt = pay.amount // تحويل صادر من البازار
+          outAmt = pay.amount
           activeSafeName = pay.safe?.name || 'خزنة البازار'
         } else if (bazaarSafe && pay.targetSafeId === bazaarSafe.id) {
-          inAmt = pay.amount // تحويل وارد لخزنة البازار
+          inAmt = pay.amount
           activeSafeName = pay.targetSafe?.name || 'خزنة البازار'
         }
       }
@@ -397,7 +442,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
     const netCash = totalCashIn - totalCashOut
     const safesSummary = Object.values(safesMap).sort((a: any, b: any) => b.net - a.net)
 
-    // 6. تقرير الموظفين
     const employeesMap: { [userId: string]: any } = {}
 
     orders.forEach(ord => {
@@ -446,12 +490,12 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
 
     const employeesSummary = Object.values(employeesMap).sort((a: any, b: any) => b.totalSales - a.totalSales)
 
-    // 7. تفاصيل الفواتير
     const formattedOrders = orders.map(ord => ({
       id: ord.id,
       orderNo: ord.orderNo,
       createdAt: ord.createdAt,
       employeeName: ord.user.name,
+      warehouseName: ord.warehouse?.name || 'المخزن الرئيسي',
       totalAmount: ord.totalAmount,
       piecesCount: ord.items.reduce((s, it) => s + it.quantity, 0),
       notes: ord.notes || '',
@@ -481,9 +525,7 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
   }
 }
 
-// =========================================================================
-// دالة حذف الأوردر المتكاملة (حذف الأوردر + حذف نقدية الخزنة + استرجاع المخزون)
-// =========================================================================
+// دالة حذف الأوردر المتكاملة (استرجاع المخزون العام ومخزن الأوردر + حذف النقدية)
 export async function deleteOrder(orderId: string) {
   try {
     const order = await prisma.order.findUnique({
@@ -498,7 +540,7 @@ export async function deleteOrder(orderId: string) {
     }
 
     await prisma.$transaction(async (tx) => {
-      // 1. إعادة رصيد المخزون للأصناف
+      // 1. إعادة رصيد المخزون للأصناف عاماً وفي مخزن الأوردر
       for (const item of order.items) {
         await tx.product.update({
           where: { id: item.productId },
@@ -506,6 +548,18 @@ export async function deleteOrder(orderId: string) {
             currentStock: { increment: item.quantity }
           }
         })
+
+        if (order.warehouseId) {
+          await (tx as any).warehouseStock.updateMany({
+            where: {
+              warehouseId: order.warehouseId,
+              productId: item.productId
+            },
+            data: {
+              quantity: { increment: item.quantity }
+            }
+          })
+        }
       }
 
       // 2. حذف سجلات التنفيذ والمرتجعات
@@ -555,6 +609,8 @@ export async function deleteOrder(orderId: string) {
     revalidatePath('/')
     revalidatePath('/orders/list')
     revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/warehouses')
+    revalidatePath('/admin/products')
     revalidatePath('/admin/reports')
     revalidatePath('/admin/reports/bazaar')
     revalidatePath('/today-summary')

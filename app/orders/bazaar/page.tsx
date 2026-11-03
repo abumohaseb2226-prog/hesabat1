@@ -27,7 +27,7 @@ interface CartItem {
   modelNo: string
   color: string
   price: number
-  quantity: number // تقبل القيم السالبة للاستبدال والمرتجع
+  quantity: number
   discountPercent: number
   description?: string
   currentStock?: number
@@ -46,6 +46,8 @@ interface PendingOrder {
   totalAmount: number
   itemCount: number
   paymentSplits: PaymentSplit[]
+  warehouseId?: string
+  warehouseName?: string
   time: string
 }
 
@@ -63,14 +65,20 @@ export default function BazaarFastOrderPage() {
   const [cachedProducts, setCachedProducts] = useState<CachedProduct[]>([])
   const [isCatalogLoading, setIsCatalogLoading] = useState(false)
 
-  // الثوابت وقائمة الخزن
+  // الثوابت، وقوائم الخزن والمخازن
   const [bazaarDefaults, setBazaarDefaults] = useState<{
     customerId: string
     customerName: string
     defaultSafeId: string
     defaultSafeName: string
+    defaultWarehouseId?: string
+    defaultWarehouseName?: string
   } | null>(null)
   const [allSafes, setAllSafes] = useState<any[]>([])
+  const [allWarehouses, setAllWarehouses] = useState<any[]>([])
+
+  // المخزن المختار حالياً للصرف
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState<string>('')
 
   // حالة الشبكة
   const [isOnline, setIsOnline] = useState(true)
@@ -110,9 +118,7 @@ export default function BazaarFastOrderPage() {
 
   const historyTrappedRef = useRef(false)
 
-  // =========================================================================
-  // حماية الرجوع للخلف: منع الخروج بالخطأ عند وجود أصناف في السلة أو معلقات
-  // =========================================================================
+  // حماية الرجوع للخلف لمنع فقدان البيانات غير المحفوظة
   useEffect(() => {
     const hasUnsaved = cart.length > 0 || pendingOrders.length > 0
     if (hasUnsaved && !historyTrappedRef.current) {
@@ -138,7 +144,6 @@ export default function BazaarFastOrderPage() {
           historyTrappedRef.current = false
           router.push('/')
         } else {
-          // البقاء في الصفحة وإعادة حبس زر الرجوع
           window.history.pushState({ page: 'bazaar-active' }, '', window.location.href)
         }
       }
@@ -160,7 +165,6 @@ export default function BazaarFastOrderPage() {
     }
   }, [router])
 
-  // دالة الخروج اليدوي من زر الهيدر
   const handleExitClick = () => {
     const hasUnsaved = cart.length > 0 || pendingOrders.length > 0
     if (hasUnsaved) {
@@ -219,11 +223,13 @@ export default function BazaarFastOrderPage() {
         })),
         totalAmount: o.totalAmount,
         paymentSplits: o.paymentSplits,
+        warehouseId: o.warehouseId || defaults.defaultWarehouseId,
         deposit: o.totalAmount
       })),
       userId,
       customerId: defaults.customerId,
-      defaultSafeId: defaults.defaultSafeId
+      defaultSafeId: defaults.defaultSafeId,
+      defaultWarehouseId: defaults.defaultWarehouseId
     }
 
     try {
@@ -283,6 +289,8 @@ export default function BazaarFastOrderPage() {
         const parsed = JSON.parse(cachedDefaults)
         setBazaarDefaults(parsed.defaults)
         setAllSafes(parsed.allSafes || [])
+        setAllWarehouses(parsed.allWarehouses || [])
+        setSelectedWarehouseId(parsed.defaults.defaultWarehouseId || '')
         setPaymentSplits([{
           safeId: parsed.defaults.defaultSafeId,
           safeName: parsed.defaults.defaultSafeName,
@@ -299,10 +307,15 @@ export default function BazaarFastOrderPage() {
             customerId: res.customerId,
             customerName: res.customerName || 'البازار',
             defaultSafeId: res.defaultSafeId,
-            defaultSafeName: res.defaultSafeName || 'خزنة البازار'
+            defaultSafeName: res.defaultSafeName || 'خزنة البازار',
+            defaultWarehouseId: res.defaultWarehouseId,
+            defaultWarehouseName: res.defaultWarehouseName || 'المخزن الرئيسي'
           }
           setBazaarDefaults(defaultsObj)
           setAllSafes(res.allSafes || [])
+          setAllWarehouses(res.allWarehouses || [])
+          setSelectedWarehouseId(res.defaultWarehouseId || '')
+
           setPaymentSplits([{
             safeId: defaultsObj.defaultSafeId,
             safeName: defaultsObj.defaultSafeName,
@@ -312,7 +325,8 @@ export default function BazaarFastOrderPage() {
           try {
             localStorage.setItem(STORAGE_DEFAULTS_KEY, JSON.stringify({
               defaults: defaultsObj,
-              allSafes: res.allSafes || []
+              allSafes: res.allSafes || [],
+              allWarehouses: res.allWarehouses || []
             }))
           } catch (e) {}
 
@@ -479,6 +493,8 @@ export default function BazaarFastOrderPage() {
       }
     }
 
+    const currentWhName = allWarehouses.find(w => w.id === selectedWarehouseId)?.name || 'المخزن الرئيسي'
+
     const newPendingOrder: PendingOrder = {
       id: `pending-${Date.now()}`,
       clientOrderIndex: pendingOrders.length + 1,
@@ -486,6 +502,8 @@ export default function BazaarFastOrderPage() {
       totalAmount: currentCartTotal,
       itemCount: currentCartPieces,
       paymentSplits: [...paymentSplits],
+      warehouseId: selectedWarehouseId,
+      warehouseName: currentWhName,
       time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
     }
 
@@ -516,6 +534,7 @@ export default function BazaarFastOrderPage() {
     }
     setCart(orderToEdit.items)
     setPaymentSplits(orderToEdit.paymentSplits || [])
+    if (orderToEdit.warehouseId) setSelectedWarehouseId(orderToEdit.warehouseId)
     setPendingOrders(prev => prev.filter(o => o.id !== orderToEdit.id))
     setIsSummaryModalOpen(false)
   }
@@ -524,6 +543,7 @@ export default function BazaarFastOrderPage() {
     let ordersToProcess = [...pendingOrders]
 
     if (cart.length > 0) {
+      const currentWhName = allWarehouses.find(w => w.id === selectedWarehouseId)?.name || 'المخزن الرئيسي'
       ordersToProcess.push({
         id: `pending-${Date.now()}`,
         clientOrderIndex: ordersToProcess.length + 1,
@@ -531,6 +551,8 @@ export default function BazaarFastOrderPage() {
         totalAmount: currentCartTotal,
         itemCount: currentCartPieces,
         paymentSplits: [...paymentSplits],
+        warehouseId: selectedWarehouseId,
+        warehouseName: currentWhName,
         time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })
       })
     }
@@ -598,11 +620,13 @@ export default function BazaarFastOrderPage() {
         })),
         totalAmount: o.totalAmount,
         paymentSplits: o.paymentSplits,
+        warehouseId: o.warehouseId || selectedWarehouseId || defaults.defaultWarehouseId,
         deposit: o.totalAmount
       })),
       userId,
       customerId: defaults.customerId,
-      defaultSafeId: defaults.defaultSafeId
+      defaultSafeId: defaults.defaultSafeId,
+      defaultWarehouseId: selectedWarehouseId || defaults.defaultWarehouseId
     }
 
     const res = await saveBulkBazaarOrders(payload)
@@ -626,7 +650,7 @@ export default function BazaarFastOrderPage() {
       }
 
       setNotice({
-        text: `🎉 تم بنجاح حفظ وتوريد ${allCombined.length} أوردر بمبلغ ${allCombined.reduce((s, o) => s + o.totalAmount, 0).toLocaleString()} ج.م في النظام والخزينة - جاهز للزبائن الجدد فوراً!`,
+        text: `🎉 تم بنجاح حفظ وتوريد ${allCombined.length} أوردر بمبلغ ${allCombined.reduce((s, o) => s + o.totalAmount, 0).toLocaleString()} ج.م في النظام وخصمها من المخزن المختار والخزائن - جاهز للزبائن الجدد!`,
         type: 'success'
       })
       setTimeout(() => setNotice(null), 7000)
@@ -640,7 +664,6 @@ export default function BazaarFastOrderPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 p-2 sm:p-4 md:p-6 font-sans pb-36" dir="rtl">
       
-      {/* إشعارات النظام السريعة */}
       {notice && (
         <div className={`max-w-6xl mx-auto mb-3 p-3 md:p-4 rounded-2xl shadow-2xl flex justify-between items-center animate-in slide-in-from-top duration-300 border ${
           notice.type === 'success' 
@@ -655,8 +678,8 @@ export default function BazaarFastOrderPage() {
         </div>
       )}
 
-      {/* الهيدر العلوي */}
-      <header className="max-w-6xl mx-auto bg-slate-900 border border-slate-800 p-3 sm:p-4 rounded-2xl shadow-xl flex flex-wrap justify-between items-center gap-2 mb-3 sm:mb-4">
+      {/* الهيدر العلوي مع اختيار المخزن */}
+      <header className="max-w-6xl mx-auto bg-slate-900 border border-slate-800 p-3 sm:p-4 rounded-2xl shadow-xl flex flex-wrap justify-between items-center gap-3 mb-3 sm:mb-4">
         <div className="flex items-center gap-2 sm:gap-3">
           <div className="w-10 h-10 sm:w-12 sm:h-12 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center text-xl sm:text-2xl shadow-lg shrink-0">
             🎪
@@ -682,8 +705,23 @@ export default function BazaarFastOrderPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* زر مزامنة يدوي للأوفلاين */}
+        {/* قائمة اختيار مخزن الصرف المنصرف منه الأوردرات */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 bg-slate-950 px-3 py-1.5 rounded-xl border-2 border-cyan-500/50 shadow-inner">
+            <span className="text-xs font-bold text-cyan-400 whitespace-nowrap">🏢 مخزن الصرف:</span>
+            <select
+              value={selectedWarehouseId}
+              onChange={(e) => setSelectedWarehouseId(e.target.value)}
+              className="bg-transparent text-xs font-bold text-white outline-none cursor-pointer"
+            >
+              {allWarehouses.map(wh => (
+                <option key={wh.id} value={wh.id} className="bg-slate-900 text-white">
+                  {wh.name} {wh.isDefault ? '⭐ (الرئيسي)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {isOnline && outboxOrders.length > 0 && (
             <button
               onClick={() => syncOutboxToServer()}
@@ -716,7 +754,6 @@ export default function BazaarFastOrderPage() {
             </button>
           )}
 
-          {/* زر خروج محمي بفحص السلة والمعلقات */}
           <button
             type="button"
             onClick={handleExitClick}
@@ -750,7 +787,6 @@ export default function BazaarFastOrderPage() {
             </button>
           </div>
 
-          {/* نافذة الكاميرا */}
           {showScanner && (
             <div className="fixed inset-0 z-50 bg-black/95 flex flex-col items-center justify-center p-3 sm:p-4">
               <div className="w-full max-w-sm bg-slate-900 rounded-3xl overflow-hidden relative border-2 border-amber-500/60 shadow-2xl flex flex-col">
@@ -792,7 +828,6 @@ export default function BazaarFastOrderPage() {
             </div>
           )}
 
-          {/* نتائج البحث المحلي السريع */}
           {searchResults.length > 0 && (
             <div className="mt-2 divide-y divide-slate-800 bg-slate-950 border border-slate-800 rounded-xl max-h-56 overflow-y-auto">
               {searchResults.map(prod => (
@@ -808,7 +843,7 @@ export default function BazaarFastOrderPage() {
                   <div className="flex items-center gap-2 sm:gap-3">
                     <div className="text-left font-mono">
                       <span className="text-emerald-400 font-bold text-sm sm:text-lg block">{prod.price} ج.م</span>
-                      <span className="text-[10px] text-slate-500">رصيد: {prod.currentStock}</span>
+                      <span className="text-[10px] text-slate-500">رصيد كلي: {prod.currentStock}</span>
                     </div>
 
                     <div className="flex gap-1">
@@ -904,7 +939,6 @@ export default function BazaarFastOrderPage() {
                         {isNegative ? 'مرتجع (-)' : 'بيع (+)'}
                       </button>
 
-                      {/* عداد الكمية */}
                       <div className="flex items-center gap-0.5 bg-slate-900 border border-slate-800 rounded-lg p-0.5">
                         <button
                           onClick={() => updateCartQty(item.productId, item.quantity - 1)}
@@ -1012,7 +1046,7 @@ export default function BazaarFastOrderPage() {
 
       </div>
 
-      {/* الشريط السفلي الثابت (Action Bar) */}
+      {/* الشريط السفلي الثابت */}
       <div className="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 p-3 sm:p-4 shadow-2xl z-40">
         <div className="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-3">
           
@@ -1030,6 +1064,13 @@ export default function BazaarFastOrderPage() {
               </span>
               <span className="text-xl sm:text-2xl font-black text-amber-400 font-mono">
                 {grandTotalWithCurrent.toLocaleString()} <small className="text-[10px] sm:text-xs text-amber-300">ج.م</small>
+              </span>
+            </div>
+
+            <div className="border-r border-slate-800 pr-4 sm:pr-6 hidden sm:block">
+              <span className="text-[10px] sm:text-[11px] text-cyan-400 font-bold block">مخزن التسليم:</span>
+              <span className="text-xs font-bold text-white">
+                {allWarehouses.find(w => w.id === selectedWarehouseId)?.name || 'المخزن الرئيسي'}
               </span>
             </div>
           </div>
@@ -1066,7 +1107,7 @@ export default function BazaarFastOrderPage() {
               <div>
                 <h3 className="text-base sm:text-lg font-black text-white">📋 تجميعة وتوريد فواتير البازار</h3>
                 <p className="text-[11px] sm:text-xs text-slate-400">
-                  {isOnline ? 'سيتم اعتماد وتوريد الفواتير في النظام والخزينة مباشرة' : '⚠️ أنت أوفلاين: سيتم اعتماد التوريد محلياً وتصفير الشاشة للزبائن الجدد'}
+                  {isOnline ? 'سيتم اعتماد وتوريد الفواتير في النظام وخصم الكميات من المخازن المحددة' : '⚠️ أنت أوفلاين: سيتم اعتماد التوريد محلياً وتصفير الشاشة للزبائن الجدد'}
                 </p>
               </div>
               <button onClick={() => setIsSummaryModalOpen(false)} className="text-slate-400 hover:text-white text-xl">✕</button>
@@ -1078,7 +1119,7 @@ export default function BazaarFastOrderPage() {
                   <div>
                     <span className="font-black text-amber-400 text-xs sm:text-sm block">أوردر #{idx + 1}</span>
                     <span className="text-[11px] text-slate-400 font-mono">
-                      الوقت: {ord.time} | قطع: {ord.itemCount}
+                      الوقت: {ord.time} | قطع: {ord.itemCount} | مخزن: <b className="text-cyan-400">{ord.warehouseName || 'الرئيسي'}</b>
                     </span>
                     <div className="text-[10px] text-amber-300/80 mt-0.5">
                       الخزن: {ord.paymentSplits?.map(s => `${s.safeName}: ${s.amount}`).join(' | ')}
@@ -1111,7 +1152,9 @@ export default function BazaarFastOrderPage() {
                 <div className="bg-blue-950/30 border border-blue-500/30 p-3 rounded-xl flex justify-between items-center">
                   <div>
                     <span className="font-black text-blue-400 text-xs sm:text-sm block">الأوردر الحالي</span>
-                    <span className="text-[11px] text-slate-400 font-mono">قطع: {currentCartPieces}</span>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      قطع: {currentCartPieces} | مخزن: <b className="text-cyan-400">{allWarehouses.find(w => w.id === selectedWarehouseId)?.name || 'الرئيسي'}</b>
+                    </span>
                   </div>
                   <span className={`font-mono font-black text-sm sm:text-base ${currentCartTotal < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
                     {currentCartTotal.toLocaleString()} ج.م

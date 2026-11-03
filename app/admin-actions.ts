@@ -50,39 +50,69 @@ export async function getUsers() {
 
 export async function addProduct(data: any) {
   try {
-    for (const item of data.colors) {
-        await prisma.product.upsert({
-            where: {
-                modelNo_color: {
-                    modelNo: data.modelNo,
-                    color: item.color
-                }
-            },
-            update: {
-                stockQty: { increment: parseInt(item.stock) },
-                currentStock: { increment: parseInt(item.stock) },
-                price: parseFloat(data.price),
-                vendor: data.vendor,
-                cost: parseFloat(data.cost) || 0,
-                description: data.description,
-            },
-            create: {
-                modelNo: data.modelNo,
-                description: data.description,
-                vendor: data.vendor,
-                price: parseFloat(data.price),
-                cost: parseFloat(data.cost) || 0,
-                discount: parseFloat(data.discount) || 0, 
-                color: item.color,
-                stockQty: parseInt(item.stock),
-                currentStock: parseInt(item.stock), 
-                status: data.status || 'OPEN'
-            }
-        });
+    let targetWhId = data.warehouseId;
+    if (!targetWhId) {
+      const defWh = await (prisma as any).warehouse.findFirst({ where: { isDefault: true } })
+        || await (prisma as any).warehouse.findFirst({ where: { name: 'المخزن الرئيسي' } });
+      targetWhId = defWh?.id;
     }
+
+    for (const item of data.colors) {
+      const stock = parseInt(item.stock) || 0;
+      const product = await prisma.product.upsert({
+        where: {
+          modelNo_color: {
+            modelNo: data.modelNo,
+            color: item.color
+          }
+        },
+        update: {
+          stockQty: { increment: stock },
+          currentStock: { increment: stock },
+          price: parseFloat(data.price),
+          vendor: data.vendor,
+          cost: parseFloat(data.cost) || 0,
+          description: data.description,
+        },
+        create: {
+          modelNo: data.modelNo,
+          description: data.description,
+          vendor: data.vendor,
+          price: parseFloat(data.price),
+          cost: parseFloat(data.cost) || 0,
+          discount: parseFloat(data.discount) || 0, 
+          color: item.color,
+          stockQty: stock,
+          currentStock: stock, 
+          status: data.status || 'OPEN'
+        }
+      });
+
+      // تسجيل وتحديث كمية الصنف في جدول المخزن المستهدف
+      if (targetWhId && stock > 0) {
+        await (prisma as any).warehouseStock.upsert({
+          where: {
+            warehouseId_productId: {
+              warehouseId: targetWhId,
+              productId: product.id
+            }
+          },
+          update: {
+            quantity: { increment: stock }
+          },
+          create: {
+            warehouseId: targetWhId,
+            productId: product.id,
+            quantity: stock
+          }
+        });
+      }
+    }
+
     revalidatePath('/admin/products');
     revalidatePath('/admin/notifications');
     revalidatePath('/admin/reports');
+    revalidatePath('/admin/warehouses');
     return { success: true };
   } catch (e) {
     console.error(e);
@@ -115,23 +145,41 @@ export async function updateProduct(id: string, data: any) {
     }
 }
 
-export async function addBulkProducts(products: any[]) {
+export async function addBulkProducts(products: any[], warehouseId?: string) {
     try {
+        let targetWhId = warehouseId;
+        if (!targetWhId) {
+            const defWh = await (prisma as any).warehouse.findFirst({ where: { isDefault: true } })
+                || await (prisma as any).warehouse.findFirst({ where: { name: 'المخزن الرئيسي' } });
+            targetWhId = defWh?.id;
+        }
+
         let count = 0;
         for (const p of products) {
-            if(p.modelNo && p.color) {
+            if (p.modelNo && p.color) {
                 const productStatus = (p.status && p.status.toUpperCase() === 'CLOSED') ? 'CLOSED' : 'OPEN';
-                
-                await prisma.product.upsert({
+                const stock = parseInt(p.stockQty) || 0;
+
+                // إذا كان ملف الإكسيل يحتوي على عمود للمخزن لكل سطر
+                const rowWhName = p.warehouse || p['المخزن'] || p['اسم المخزن'];
+                let rowWhId = targetWhId;
+                if (rowWhName) {
+                    const foundWh = await (prisma as any).warehouse.findFirst({
+                        where: { name: String(rowWhName).trim() }
+                    });
+                    if (foundWh) rowWhId = foundWh.id;
+                }
+
+                const product = await prisma.product.upsert({
                     where: {
                         modelNo_color: {
-                            modelNo: String(p.modelNo),
-                            color: String(p.color)
+                            modelNo: String(p.modelNo).trim(),
+                            color: String(p.color).trim()
                         }
                     },
                     update: {
-                        stockQty: { increment: parseInt(p.stockQty) || 0 },
-                        currentStock: { increment: parseInt(p.stockQty) || 0 },
+                        stockQty: { increment: stock },
+                        currentStock: { increment: stock },
                         price: parseFloat(p.price) || 0,
                         cost: parseFloat(p.cost) || 0,
                         discount: parseFloat(p.discount) || 0,
@@ -140,31 +188,60 @@ export async function addBulkProducts(products: any[]) {
                         status: productStatus
                     },
                     create: {
-                        modelNo: String(p.modelNo),
+                        modelNo: String(p.modelNo).trim(),
                         description: p.description || '',
                         vendor: p.vendor || '',
-                        color: String(p.color),
+                        color: String(p.color).trim(),
                         price: parseFloat(p.price) || 0,
                         cost: parseFloat(p.cost) || 0,
                         discount: parseFloat(p.discount) || 0,
-                        stockQty: parseInt(p.stockQty) || 0,
-                        currentStock: parseInt(p.stockQty) || 0, 
+                        stockQty: stock,
+                        currentStock: stock, 
                         status: productStatus
                     }
                 });
+
+                // ترحيل وتحديث رصيد الصنف في جدول المخزن المحدد
+                if (rowWhId && stock > 0) {
+                    await (prisma as any).warehouseStock.upsert({
+                        where: {
+                            warehouseId_productId: {
+                                warehouseId: rowWhId,
+                                productId: product.id
+                            }
+                        },
+                        update: {
+                            quantity: { increment: stock }
+                        },
+                        create: {
+                            warehouseId: rowWhId,
+                            productId: product.id,
+                            quantity: stock
+                        }
+                    });
+                }
+
                 count++;
             }
         }
         revalidatePath('/admin/products');
         revalidatePath('/admin/reports');
+        revalidatePath('/admin/warehouses');
         return { success: true, count };
     } catch (e) {
         return { success: false, error: 'حدث خطأ أثناء الاستيراد' };
     }
 }
 
-export async function updateInitialStockBulk(items: { modelNo: string; color: string; stockQty: number }[]) {
+export async function updateInitialStockBulk(items: { modelNo: string; color: string; stockQty: number }[], warehouseId?: string) {
   try {
+    let targetWhId = warehouseId;
+    if (!targetWhId) {
+      const defWh = await (prisma as any).warehouse.findFirst({ where: { isDefault: true } })
+        || await (prisma as any).warehouse.findFirst({ where: { name: 'المخزن الرئيسي' } });
+      targetWhId = defWh?.id;
+    }
+
     let updatedCount = 0;
     let notFoundCount = 0;
 
@@ -220,12 +297,32 @@ export async function updateInitialStockBulk(items: { modelNo: string; color: st
         }
       });
 
+      // تحديث رصيد المخزن المحدد
+      if (targetWhId) {
+        await (prisma as any).warehouseStock.upsert({
+          where: {
+            warehouseId_productId: {
+              warehouseId: targetWhId,
+              productId: product.id
+            }
+          },
+          update: {
+            quantity: Math.max(0, newCurrentStock)
+          },
+          create: {
+            warehouseId: targetWhId,
+            productId: product.id,
+            quantity: Math.max(0, newCurrentStock)
+          }
+        });
+      }
+
       updatedCount++;
     }
 
     revalidatePath('/admin/products');
     revalidatePath('/admin/reports');
-    revalidatePath('/admin/notifications');
+    revalidatePath('/admin/warehouses');
     revalidatePath('/sorting');
 
     return { success: true, updatedCount, notFoundCount };
@@ -428,7 +525,15 @@ export async function deleteAllProducts() {
 }
 
 export async function getProducts() {
-  const products = await prisma.product.findMany({ orderBy: { id: 'desc' }, take: 5000 });
+  const products = await prisma.product.findMany({ 
+    orderBy: { id: 'desc' }, 
+    take: 5000,
+    include: {
+      warehouseStocks: {
+        include: { warehouse: true }
+      }
+    }
+  });
   return JSON.parse(JSON.stringify(products));
 }
 

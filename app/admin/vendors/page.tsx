@@ -23,16 +23,14 @@ export default function VendorsPage() {
   const [perfStartDate, setPerfStartDate] = useState('')
   const [perfEndDate, setPerfEndDate] = useState('')
 
-  // ✅ حفظ المعرف فقط بدلاً من الكائن لمنع إعادة الفتح التلقائي وحلقات التكرار
   const [selectedVendorId, setSelectedVendorId] = useState<string | null>(null)
 
-  // استخراج بيانات المورد المحدد للنافذة المنبثقة تلقائياً
   const selectedVendorForBreakdown = useMemo(() => {
     if (!selectedVendorId) return null
     return performanceData.find((v: any) => v.id === selectedVendorId) || null
   }, [performanceData, selectedVendorId])
 
-  // مودال إضافة مورد جديد
+  // مودال إضافة مورد جديد مع دعم الرصيد الافتتاحي السابق
   const [showAddModal, setShowAddModal] = useState(false)
   const [newVendor, setNewVendor] = useState({
     name: '',
@@ -41,6 +39,8 @@ export default function VendorsPage() {
     code: '',
     address: '',
     notes: '',
+    initialBalance: '',
+    initialBalanceType: 'CREDIT' as 'CREDIT' | 'DEBIT'
   })
   const [isSaving, setIsSaving] = useState(false)
 
@@ -51,7 +51,6 @@ export default function VendorsPage() {
     setLoading(false)
   }
 
-  // ✅ دالة جلب تقرير الأداء أصبحت مستقلة تماماً عن فتح وغلق النوافذ
   const loadPerformanceReport = useCallback(async () => {
     setPerfLoading(true)
     const res = await getVendorsPerformanceReport(perfStartDate, perfEndDate)
@@ -147,13 +146,31 @@ export default function VendorsPage() {
     }
 
     setIsSaving(true)
-    const result = await addVendor(newVendor)
+    const result = await addVendor({
+      name: newVendor.name,
+      phone: newVendor.phone,
+      phone2: newVendor.phone2,
+      code: newVendor.code,
+      address: newVendor.address,
+      notes: newVendor.notes,
+      initialBalance: parseFloat(newVendor.initialBalance) || 0,
+      initialBalanceType: newVendor.initialBalanceType
+    })
     setIsSaving(false)
 
     if (result.success) {
       alert('✅ تم إضافة المورد بنجاح')
       setShowAddModal(false)
-      setNewVendor({ name: '', phone: '', phone2: '', code: '', address: '', notes: '' })
+      setNewVendor({
+        name: '',
+        phone: '',
+        phone2: '',
+        code: '',
+        address: '',
+        notes: '',
+        initialBalance: '',
+        initialBalanceType: 'CREDIT'
+      })
       loadVendors()
     } else {
       alert('❌ خطأ: ' + result.error)
@@ -363,7 +380,6 @@ export default function VendorsPage() {
         {activeTab === 'PERFORMANCE' && (
           <div className="space-y-4">
             
-            {/* شريط الفلاتر والتواريخ لتقرير الأداء */}
             <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-xs font-bold text-gray-500">الفترة:</span>
@@ -541,9 +557,7 @@ export default function VendorsPage() {
 
       </div>
 
-      {/* ========================================================= */}
-      {/* نافذة منبثقة: ترتيب أكثر أصناف المورد مبيعاً عند الضغط عليه */}
-      {/* ========================================================= */}
+      {/* نافذة تفصيل مبيعات أصناف المورد */}
       {selectedVendorForBreakdown && (
         <div 
           className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-3 md:p-6"
@@ -553,8 +567,6 @@ export default function VendorsPage() {
             className="bg-white w-full max-w-4xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in duration-200"
             onClick={(e) => e.stopPropagation()}
           >
-            
-            {/* رأس النافذة */}
             <div className="bg-gradient-to-r from-emerald-600 to-teal-700 text-white p-4 flex justify-between items-center">
               <div>
                 <div className="flex items-center gap-2">
@@ -580,7 +592,6 @@ export default function VendorsPage() {
               </button>
             </div>
 
-            {/* جدول تفاصيل وترتيب الأصناف */}
             <div className="p-4 overflow-y-auto flex-1">
               <table className="w-full text-right text-sm">
                 <thead className="bg-gray-100 text-gray-700 sticky top-0 border-b border-gray-200">
@@ -656,7 +667,6 @@ export default function VendorsPage() {
               </table>
             </div>
 
-            {/* فوتر النافذة */}
             <div className="bg-gray-50 p-3 border-t border-gray-200 flex justify-between items-center text-xs">
               <span className="text-gray-500">
                 عدد الموديلات المباعة: <b className="text-gray-800 font-mono">{selectedVendorForBreakdown.topProducts?.length || 0}</b> صنف
@@ -684,7 +694,7 @@ export default function VendorsPage() {
         </div>
       )}
 
-      {/* الشريط الإحصائي الثابت في أسفل الشاشة (لقائمة الموردين) */}
+      {/* الشريط الإحصائي السفلي */}
       {activeTab === 'LIST' && (
         <div className="fixed bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-md border-t-2 border-purple-500/50 p-3 sm:p-4 shadow-2xl z-40 text-white">
           <div className="max-w-7xl mx-auto flex flex-col md:flex-row justify-between items-center gap-3">
@@ -743,7 +753,7 @@ export default function VendorsPage() {
         </div>
       )}
 
-      {/* Modal إضافة مورد جديد */}
+      {/* Modal إضافة مورد جديد مع خيار الرصيد السابق */}
       {showAddModal && (
         <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl">
@@ -753,7 +763,7 @@ export default function VendorsPage() {
             <form onSubmit={handleAdd} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">
-                  اسم المورد (مطلوب)
+                  اسم المورد (مطلوب) *
                 </label>
                 <input
                   type="text"
@@ -763,6 +773,7 @@ export default function VendorsPage() {
                   required
                 />
               </div>
+
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">
                   كود المورد (تلقائي لو تركته فارغاً)
@@ -775,6 +786,39 @@ export default function VendorsPage() {
                   placeholder="سيتم التوليد تلقائياً"
                 />
               </div>
+
+              {/* حقول الرصيد الافتتاحي السابق */}
+              <div className="bg-purple-50 p-3.5 rounded-xl border border-purple-200 space-y-2">
+                <span className="text-xs font-bold text-purple-900 block">الرصيد الافتتاحي السابق (إن وجد)</span>
+                
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-bold text-gray-600 mb-1">المبلغ (ج.م)</label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={newVendor.initialBalance}
+                      onChange={(e) => setNewVendor({ ...newVendor, initialBalance: e.target.value })}
+                      placeholder="0.00"
+                      className="w-full border p-2 rounded-lg bg-white text-xs font-mono font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-gray-600 mb-1">طبيعة الرصيد</label>
+                    <select
+                      value={newVendor.initialBalanceType}
+                      onChange={(e: any) => setNewVendor({ ...newVendor, initialBalanceType: e.target.value })}
+                      className="w-full border p-2 rounded-lg bg-white text-xs font-bold"
+                    >
+                      <option value="CREDIT">دائن (له علينا)</option>
+                      <option value="DEBIT">مدين (عليه لنا)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-xs font-bold text-gray-500 mb-1">هاتف 1</label>
@@ -795,6 +839,7 @@ export default function VendorsPage() {
                   />
                 </div>
               </div>
+
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">العنوان</label>
                 <input
@@ -804,6 +849,7 @@ export default function VendorsPage() {
                   className="w-full border p-3 rounded-xl shadow-sm text-xs"
                 />
               </div>
+
               <div>
                 <label className="block text-xs font-bold text-gray-500 mb-1">ملاحظات</label>
                 <textarea
@@ -813,6 +859,7 @@ export default function VendorsPage() {
                   rows={2}
                 />
               </div>
+
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"

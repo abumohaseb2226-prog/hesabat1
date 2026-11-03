@@ -6,6 +6,7 @@ import Link from 'next/link'
 import * as XLSX from 'xlsx'
 import { getVendors, addVendor } from '@/app/vendor-actions'
 import { getSafesList } from '@/app/report-actions'
+import { getWarehouses } from '@/app/warehouse-management-actions'
 import { 
   createPurchaseInvoice, 
   searchProductsForPurchase, 
@@ -38,6 +39,10 @@ export default function NewPurchaseInvoicePage() {
 
   // خيار وضع استيراد الأصناف: أصناف متوفرة مسبقاً أو أصناف جديدة بالكامل
   const [importMode, setImportMode] = useState<'EXISTING' | 'NEW_PRODUCTS'>('NEW_PRODUCTS')
+
+  // المخازن (تحديد المخزن المستلم)
+  const [warehouses, setWarehouses] = useState<any[]>([])
+  const [selectedWarehouseId, setSelectedWarehouseId] = useState('')
 
   // الخزائن والموردين
   const [safes, setSafes] = useState<any[]>([])
@@ -79,7 +84,7 @@ export default function NewPurchaseInvoicePage() {
   // مراجع لحقول الإدخال لتسهيل التنقل بـ Enter
   const inputRefs = useRef<{ [key: string]: HTMLElement | null }>({})
 
-  // تحميل الموردين والخزن وإغلاق النوافذ عند الضغط خارجها
+  // تحميل الموردين والخزن والمخازن وإغلاق النوافذ عند الضغط خارجها
   useEffect(() => {
     getVendors().then(setVendors)
     getSafesList().then((resSafes: any[]) => {
@@ -87,6 +92,17 @@ export default function NewPurchaseInvoicePage() {
       if (resSafes && resSafes.length > 0) {
         const main = resSafes.find(s => s.name?.includes('الرئيسية')) || resSafes[0]
         setSelectedSafeId(main.id)
+      }
+    })
+
+    // جلب المخازن وتعيين المخزن الرئيسي افتراضياً
+    getWarehouses().then((resWh: any) => {
+      if (resWh?.success && resWh.warehouses) {
+        setWarehouses(resWh.warehouses)
+        const defaultWh = resWh.warehouses.find((w: any) => w.isDefault) || resWh.warehouses[0]
+        if (defaultWh) {
+          setSelectedWarehouseId(defaultWh.id)
+        }
       }
     })
 
@@ -322,7 +338,6 @@ export default function NewPurchaseInvoicePage() {
   // تحميل نموذج الإكسيل بحسب الوضع المختار
   const downloadExcelTemplate = () => {
     if (importMode === 'NEW_PRODUCTS') {
-      // نموذج الفاتورة للأصناف الجديدة مطابق للصورة المرفقة
       const templateData = [
         {
           "كود_الموديل": "jp1001",
@@ -371,7 +386,6 @@ export default function NewPurchaseInvoicePage() {
       XLSX.utils.book_append_sheet(wb, ws, "NewProducts")
       XLSX.writeFile(wb, "New_Products_Purchase_Template.xlsx")
     } else {
-      // نموذج الأصناف المتوفرة المختصر: (الموديل، اللون، الكمية)
       const templateData = [
         { "الموديل": "5001", "اللون": "أسود", "الكمية": 20 },
         { "الموديل": "5001", "اللون": "أبيض", "الكمية": 15 }
@@ -407,18 +421,15 @@ export default function NewPurchaseInvoicePage() {
         }
 
         const rawItems = data.map(d => {
-          // استخراج الموديل بجميع المسميات الممكنة
           const modelNo = String(
             d['كود_الموديل'] || d['كود الموديل'] || d['الموديل'] || d['الصنف'] || d['modelNo'] || ''
           ).trim()
 
-          // استخراج اللون (إذا كان فارغاً كما في بعض صفوف الصورة، يُعين افتراضياً إلى 'لون')
           let color = String(d['اللون'] || d['لون'] || d['color'] || '').trim()
           if (!color) color = 'لون'
 
           const quantity = Number(d['الكمية'] || d['العدد'] || d['quantity'] || d['qty']) || 1
 
-          // التكلفة والسعر والوصف
           const costVal = d['سعر_التكلفة'] || d['سعر التكلفة'] || d['التكلفة'] || d['cost']
           const priceVal = d['سعر_البيع'] || d['سعر البيع'] || d['السعر'] || d['price']
           const descVal = d['الوصف'] || d['وصف'] || d['description']
@@ -439,7 +450,6 @@ export default function NewPurchaseInvoicePage() {
           return
         }
 
-        // جلب البيانات المسجلة مسبقاً في الداتا بيز للأصناف إن وُجدت
         const dbProducts = await fetchProductsForExcelImport(rawItems)
         const productMap = new Map<string, any>()
         dbProducts.forEach((p: any) => {
@@ -457,7 +467,6 @@ export default function NewPurchaseInvoicePage() {
           if (dbItem) matchedCount++
           else newItemsCount++
 
-          // تحديد التكلفة والسعر والوصف مع إعطاء الأولوية للبيانات المرفوعة في ملف الأصناف الجديدة
           const cost = r.cost !== undefined ? r.cost : (dbItem?.cost || 0)
           const price = r.price !== undefined ? r.price : (dbItem?.price || (cost > 0 ? cost * 1.25 : 0))
           const description = r.description !== undefined ? r.description : (dbItem?.description || '')
@@ -504,6 +513,11 @@ export default function NewPurchaseInvoicePage() {
       return
     }
 
+    if (!selectedWarehouseId) {
+      alert('يرجى تحديد المخزن المستلم للبضاعة')
+      return
+    }
+
     const validItems = rows.filter(r => r.modelNo.trim() !== '' && Number(r.quantity) > 0)
 
     if (validItems.length === 0) {
@@ -526,6 +540,7 @@ export default function NewPurchaseInvoicePage() {
 
     const payload = {
       vendorId: selectedVendor.id,
+      warehouseId: selectedWarehouseId, // 👈 تمرير المخزن المختار
       invoiceType,
       paymentStatus,
       safeId: paymentStatus === 'CASH' ? selectedSafeId : undefined,
@@ -605,14 +620,16 @@ export default function NewPurchaseInvoicePage() {
 
       <div className="max-w-7xl mx-auto space-y-6" ref={dropdownContainerRef}>
 
-        {/* كارت إعدادات الفاتورة ونوع الاستيراد */}
+        {/* كارت إعدادات الفاتورة وتحديد المخزن والمورد */}
         <div className="bg-slate-800/80 border border-slate-700/80 p-6 rounded-2xl shadow-lg">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          
+          {/* الصف الأول: الأزرار والخيارات الأساسية متضمنة المخزن المستلم */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 items-end">
             
-            {/* نوع الفاتورة */}
+            {/* 1. نوع الفاتورة */}
             <div>
               <label className="block text-xs font-bold text-slate-400 mb-2">نوع الفاتورة</label>
-              <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1 rounded-xl border border-slate-700">
+              <div className="grid grid-cols-2 gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-700">
                 <button
                   type="button"
                   onClick={() => setInvoiceType('PURCHASE')}
@@ -638,10 +655,10 @@ export default function NewPurchaseInvoicePage() {
               </div>
             </div>
 
-            {/* طريقة السداد */}
+            {/* 2. طريقة السداد */}
             <div>
               <label className="block text-xs font-bold text-slate-400 mb-2">طريقة السداد</label>
-              <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1 rounded-xl border border-slate-700">
+              <div className="grid grid-cols-2 gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-700">
                 <button
                   type="button"
                   onClick={() => setPaymentStatus('CREDIT')}
@@ -667,10 +684,10 @@ export default function NewPurchaseInvoicePage() {
               </div>
             </div>
 
-            {/* وضع الاستيراد (أصناف جديدة مع تفاصيلها بالكامل أو أصناف حالية) */}
+            {/* 3. وضع الاستيراد */}
             <div>
               <label className="block text-xs font-bold text-slate-400 mb-2">نوع استيراد الإكسيل</label>
-              <div className="grid grid-cols-2 gap-2 bg-slate-900 p-1 rounded-xl border border-slate-700">
+              <div className="grid grid-cols-2 gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-700">
                 <button
                   type="button"
                   onClick={() => setImportMode('NEW_PRODUCTS')}
@@ -698,7 +715,26 @@ export default function NewPurchaseInvoicePage() {
               </div>
             </div>
 
-            {/* رقم الفاتورة والتاريخ */}
+            {/* 4. 🏢 المخزن المستلم للبضاعة (المطلوب) */}
+            <div>
+              <div className="flex justify-between items-center mb-1">
+                <label className="text-xs font-bold text-cyan-400">🏢 المخزن المستلم *</label>
+                <span className="text-[10px] text-slate-400">الافتراضي: الرئيسي</span>
+              </div>
+              <select
+                value={selectedWarehouseId}
+                onChange={(e) => setSelectedWarehouseId(e.target.value)}
+                className="w-full bg-slate-900 border-2 border-cyan-500/50 rounded-xl p-2.5 text-xs font-bold text-white focus:border-cyan-400 outline-none transition"
+              >
+                {warehouses.map(wh => (
+                  <option key={wh.id} value={wh.id}>
+                    {wh.name} {wh.isDefault ? '⭐ (الرئيسي)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* 5. رقم الفاتورة والمرجع */}
             <div>
               <label className="block text-xs font-bold text-slate-400 mb-1">رقم الفاتورة / المرجع</label>
               <input
@@ -711,6 +747,7 @@ export default function NewPurchaseInvoicePage() {
             </div>
           </div>
 
+          {/* الصف الثاني: المورد والتاريخ والخزنة / الملاحظات */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4 pt-4 border-t border-slate-700/60">
             
             {/* تاريخ الفاتورة */}
@@ -724,7 +761,7 @@ export default function NewPurchaseInvoicePage() {
               />
             </div>
 
-            {/* اختيار المورد */}
+            {/* اختيار المورد مع البحث السريع */}
             <div className="relative" ref={vendorRef}>
               <div className="flex justify-between items-center mb-1">
                 <label className="text-xs font-bold text-slate-300">🏪 المورد (مطلوب)</label>
@@ -841,6 +878,9 @@ export default function NewPurchaseInvoicePage() {
           <div className="p-4 bg-slate-800 border-b border-slate-700 flex justify-between items-center rounded-t-2xl">
             <h3 className="text-lg font-bold text-white flex items-center gap-2">
               <span>📋 بنود الفاتورة</span>
+              <span className="text-xs text-cyan-300 font-bold bg-cyan-950/60 border border-cyan-600/40 px-2.5 py-1 rounded-lg">
+                المخزن المستلم: {warehouses.find(w => w.id === selectedWarehouseId)?.name || 'المخزن الرئيسي'}
+              </span>
               <span className="text-xs text-purple-300 font-bold bg-purple-950/60 border border-purple-600/40 px-2.5 py-1 rounded-lg">
                 {importMode === 'NEW_PRODUCTS' ? 'وضع: أصناف جديدة كاملة التفاصيل' : 'وضع: أصناف حالية'}
               </span>
@@ -1073,7 +1113,7 @@ export default function NewPurchaseInvoicePage() {
 
           {/* تذييل الجدول والإجماليات */}
           <div className="p-6 bg-slate-900 border-t border-slate-700 flex flex-col md:flex-row justify-between items-center gap-4 rounded-b-2xl">
-            <div className="flex gap-6 text-sm">
+            <div className="flex flex-wrap gap-6 text-sm">
               <div>
                 <span className="text-slate-400">عدد الأسطر: </span>
                 <span className="font-bold text-white">{rows.length}</span>
@@ -1081,6 +1121,12 @@ export default function NewPurchaseInvoicePage() {
               <div>
                 <span className="text-slate-400">إجمالي القطع: </span>
                 <span className="font-bold text-blue-400 text-lg">{totalQuantity}</span>
+              </div>
+              <div>
+                <span className="text-slate-400">المخزن المستلم: </span>
+                <span className="font-bold text-cyan-400 text-base">
+                  {warehouses.find(w => w.id === selectedWarehouseId)?.name || 'المخزن الرئيسي'}
+                </span>
               </div>
               <div>
                 <span className="text-slate-400">صافي قيمة الفاتورة: </span>
@@ -1115,7 +1161,7 @@ export default function NewPurchaseInvoicePage() {
                   <>
                     <span>💾</span>
                     <span>
-                      {invoiceType === 'PURCHASE' ? 'حفظ فاتورة المشتريات' : 'حفظ مرتجع المشتريات'}
+                      {invoiceType === 'PURCHASE' ? 'حفظ وتوريد فاتورة المشتريات' : 'حفظ مرتجع المشتريات'}
                     </span>
                   </>
                 )}

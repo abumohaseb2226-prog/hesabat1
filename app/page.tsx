@@ -142,7 +142,6 @@ export default async function Home() {
                 </Link>
               )}
               
-              {/* زر الخروج الآمن المباشر للوجن */}
               <LogoutButton />
             </div>
           </div>
@@ -154,13 +153,14 @@ export default async function Home() {
             <TodaySummaryButton />
           )}
 
-          {/* الكروت الرئيسية للطلب */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* الكروت الرئيسية للطلب والبيع والمرتجع (متاحة للجميع: موظفين وإدارة) */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             
+            {/* 1. أوردر جديد */}
             <div className="scale-in" style={{ animationDelay: '0.1s' }}>
               <Link 
                 href="/orders/new" 
-                className="action-card block relative overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-purple-600 p-8 rounded-3xl shadow-2xl group animate-pulse-glow"
+                className="action-card block relative overflow-hidden bg-gradient-to-br from-blue-500 via-blue-600 to-purple-600 p-7 rounded-3xl shadow-2xl group animate-pulse-glow"
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-white/0 to-white/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <div className="absolute top-4 left-4 text-5xl opacity-20 animate-float">🛒</div>
@@ -174,17 +174,18 @@ export default async function Home() {
                       طلب بيع عادي وكاشير مفصل
                     </span>
                   </div>
-                  <div className="bg-white/20 w-16 h-16 flex items-center justify-center rounded-2xl group-hover:scale-110 transition-transform duration-300">
-                    <span className="text-4xl text-white">+</span>
+                  <div className="bg-white/20 w-14 h-14 flex items-center justify-center rounded-2xl group-hover:scale-110 transition-transform duration-300">
+                    <span className="text-3xl text-white">+</span>
                   </div>
                 </div>
               </Link>
             </div>
 
+            {/* 2. فاتورة البازار السريعة */}
             <div className="scale-in" style={{ animationDelay: '0.15s' }}>
               <Link 
                 href="/orders/bazaar" 
-                className="action-card block relative overflow-hidden bg-gradient-to-br from-amber-500 via-orange-600 to-rose-600 p-8 rounded-3xl shadow-2xl group border border-amber-400/30"
+                className="action-card block relative overflow-hidden bg-gradient-to-br from-amber-500 via-orange-600 to-rose-600 p-7 rounded-3xl shadow-2xl group border border-amber-400/30"
               >
                 <div className="absolute inset-0 bg-gradient-to-br from-white/0 to-white/15 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
                 <div className="absolute top-4 left-4 text-5xl opacity-20 animate-float">🎪</div>
@@ -195,16 +196,40 @@ export default async function Home() {
                       <span className="text-2xl md:text-3xl font-black text-white mb-1">
                         فاتورة البازار 🎪
                       </span>
-                      <span className="bg-amber-300 text-amber-950 font-black text-[10px] px-2 py-0.5 rounded-full uppercase">
-                        سريع أوفلاين
-                      </span>
                     </div>
                     <span className="text-amber-100 text-xs md:text-sm font-bold">
                       أوردرات سريعة متتالية وتوريد مجمع
                     </span>
                   </div>
-                  <div className="bg-white/20 w-16 h-16 flex items-center justify-center rounded-2xl group-hover:scale-110 transition-transform duration-300">
+                  <div className="bg-white/20 w-14 h-14 flex items-center justify-center rounded-2xl group-hover:scale-110 transition-transform duration-300">
                     <span className="text-3xl text-white">⚡</span>
+                  </div>
+                </div>
+              </Link>
+            </div>
+
+            {/* 3. كارت مرتجع واستبدال مبيعات (متاح للجميع: موظف وإدارة) */}
+            <div className="scale-in" style={{ animationDelay: '0.18s' }}>
+              <Link 
+                href="/orders/return" 
+                className="action-card block relative overflow-hidden bg-gradient-to-br from-rose-600 via-red-600 to-orange-600 p-7 rounded-3xl shadow-2xl group border border-rose-400/30"
+              >
+                <div className="absolute inset-0 bg-gradient-to-br from-white/0 to-white/15 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+                <div className="absolute top-4 left-4 text-5xl opacity-20 animate-float">↩️</div>
+                
+                <div className="relative z-10 flex items-center justify-between">
+                  <div className="flex flex-col items-start">
+                    <div className="flex items-center gap-2">
+                      <span className="text-2xl md:text-3xl font-black text-white mb-1">
+                        مرتجع واستبدال ↩️
+                      </span>
+                    </div>
+                    <span className="text-rose-100 text-xs md:text-sm font-bold">
+                      من فاتورة سابقة أو مرتجع حر
+                    </span>
+                  </div>
+                  <div className="bg-white/20 w-14 h-14 flex items-center justify-center rounded-2xl group-hover:scale-110 transition-transform duration-300">
+                    <span className="text-3xl text-white">🔄</span>
                   </div>
                 </div>
               </Link>
@@ -294,13 +319,13 @@ export default async function Home() {
                   className="action-card block glass rounded-2xl p-6 text-center group"
                 >
                   <div className="bg-gradient-to-br from-red-500/20 to-orange-500/20 w-16 h-16 mx-auto rounded-2xl flex items-center justify-center mb-3 group-hover:scale-110 group-hover:rotate-6 transition-all duration-300">
-                    <span className="text-3xl">↩️</span>
+                    <span className="text-3xl">📑</span>
                   </div>
                   <span className="text-white font-bold text-sm md:text-base">
-                    المرتجعات
+                    سجل المرتجعات
                   </span>
                   <div className="text-gray-400 text-xs mt-1">
-                    سجل المرتجعات
+                    إدارة وتقارير المرتجعات
                   </div>
                 </Link>
               </div>
