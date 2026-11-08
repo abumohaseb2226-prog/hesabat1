@@ -24,6 +24,8 @@ interface PendingBazaarOrder {
   items: BazaarOrderItem[]
   totalAmount: number
   paymentSplits: PaymentSplit[]
+  warehouseId?: string
+  warehouseName?: string
   notes?: string
   createdAt?: string
 }
@@ -72,7 +74,7 @@ export async function getBazaarProductsCatalog() {
   }
 }
 
-// تهيئة عميل وخزنة البازار الافتراضية مع جلب كل الخزن المتاحة
+// تهيئة عميل وخزنة ومخزن البازار الافتراضي مع جلب كل الخزن والمخازن (متوافق حرفياً مع واجهة البازار)
 export async function getOrCreateBazaarDefaults() {
   try {
     let customer = await prisma.customer.findFirst({
@@ -102,7 +104,33 @@ export async function getOrCreateBazaarDefaults() {
       })
     }
 
+    // تهيئة المخزن الرئيسي الافتراضي
+    let defaultWarehouse = await (prisma as any).warehouse.findFirst({
+      where: { isDefault: true }
+    })
+
+    if (!defaultWarehouse) {
+      defaultWarehouse = await (prisma as any).warehouse.findFirst({
+        where: { name: 'المخزن الرئيسي' }
+      })
+    }
+
+    if (!defaultWarehouse) {
+      defaultWarehouse = await (prisma as any).warehouse.create({
+        data: {
+          name: 'المخزن الرئيسي',
+          code: 'WH-01',
+          location: 'المقر الرئيسي / المعرض',
+          isDefault: true
+        }
+      })
+    }
+
     const allSafes = await prisma.safe.findMany({
+      orderBy: { name: 'asc' }
+    })
+
+    const allWarehouses = await (prisma as any).warehouse.findMany({
       orderBy: { name: 'asc' }
     })
 
@@ -112,7 +140,10 @@ export async function getOrCreateBazaarDefaults() {
       customerName: customer.name,
       defaultSafeId: defaultSafe.id,
       defaultSafeName: defaultSafe.name,
-      allSafes: JSON.parse(JSON.stringify(allSafes))
+      defaultWarehouseId: defaultWarehouse.id,
+      defaultWarehouseName: defaultWarehouse.name,
+      allSafes: JSON.parse(JSON.stringify(allSafes)),
+      allWarehouses: JSON.parse(JSON.stringify(allWarehouses))
     }
   } catch (error: any) {
     console.error('Error getting bazaar defaults:', error)
@@ -120,15 +151,16 @@ export async function getOrCreateBazaarDefaults() {
   }
 }
 
-// حفظ مجموعة الأوردرات دفعة واحدة مع دعم التوزيع على الخزن والكميات السالبة والترحيل المحاسبي
+// حفظ مجموعة الأوردرات دفعة واحدة مع دعم التوزيع على الخزن والكميات السالبة وخصم المخزن المختار والترحيل المحاسبي
 export async function saveBulkBazaarOrders(payload: {
   orders: PendingBazaarOrder[]
   userId: string
   customerId: string
   defaultSafeId: string
+  defaultWarehouseId?: string
 }) {
   try {
-    const { orders, userId, customerId, defaultSafeId } = payload
+    const { orders, userId, customerId, defaultSafeId, defaultWarehouseId } = payload
 
     if (!orders || orders.length === 0) {
       return { success: false, error: 'لا توجد أوردرات معلقة للحفظ' }
@@ -145,7 +177,6 @@ export async function saveBulkBazaarOrders(payload: {
     const safeNameMap = new Map<string, string>()
     allSafesList.forEach(s => safeNameMap.set(s.id, s.name))
 
-    // تجهيز أسعار التكلفة لحساب تكلفة البضاعة المباعة بدقة
     const allProductIds = Array.from(new Set(orders.flatMap(o => o.items.map(it => it.productId))))
     const dbProducts = await prisma.product.findMany({
       where: { id: { in: allProductIds } },
@@ -157,10 +188,18 @@ export async function saveBulkBazaarOrders(payload: {
     const createdOrderNumbers: number[] = []
 
     await prisma.$transaction(async (tx) => {
+      // المخزن الافتراضي كخيار احتياطي
+      let fallbackWarehouseId = defaultWarehouseId
+      if (!fallbackWarehouseId) {
+        const defWh = await (tx as any).warehouse.findFirst({ where: { isDefault: true } })
+        fallbackWarehouseId = defWh?.id
+      }
+
       for (const ord of orders) {
         if (!ord.items || ord.items.length === 0) continue
 
         const primarySafeId = ord.paymentSplits?.[0]?.safeId || defaultSafeId
+        const activeWarehouseId = ord.warehouseId || fallbackWarehouseId
 
         // 1. إنشاء الأوردر
         const newOrder = await tx.order.create({
@@ -169,7 +208,7 @@ export async function saveBulkBazaarOrders(payload: {
             customerId,
             safeId: primarySafeId,
             totalAmount: ord.totalAmount,
-            deposit: ord.totalAmount, // خالص الحساب كاشير
+            deposit: ord.totalAmount,
             currency: 'EGP',
             notes: ord.notes || 'فاتورة مبيعات سريعة - نمط البازار',
             items: {
@@ -185,7 +224,7 @@ export async function saveBulkBazaarOrders(payload: {
 
         createdOrderNumbers.push(newOrder.orderNo)
 
-        // 2. تحديث المخزون وحساب إجمالي التكلفة
+        // 2. تحديث المخزون الكلي ومخزون المستودع المحدد (WarehouseStock) وحساب التكلفة
         let totalCogs = 0
         for (const it of ord.items) {
           await tx.product.update({
@@ -194,6 +233,26 @@ export async function saveBulkBazaarOrders(payload: {
               currentStock: { decrement: it.quantity }
             }
           })
+
+          if (activeWarehouseId) {
+            await (tx as any).warehouseStock.upsert({
+              where: {
+                warehouseId_productId: {
+                  warehouseId: activeWarehouseId,
+                  productId: it.productId
+                }
+              },
+              update: {
+                quantity: { decrement: it.quantity }
+              },
+              create: {
+                warehouseId: activeWarehouseId,
+                productId: it.productId,
+                quantity: -it.quantity
+              }
+            })
+          }
+
           const unitCost = costMap.get(it.productId) || 0
           if (it.quantity > 0) {
             totalCogs += (unitCost * it.quantity)
@@ -256,6 +315,7 @@ export async function saveBulkBazaarOrders(payload: {
     revalidatePath('/')
     revalidatePath('/orders/list')
     revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
     revalidatePath('/admin/reports/bazaar')
     revalidatePath('/admin/reports/financial')
@@ -291,12 +351,10 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
     const endDate = new Date(endStr)
     endDate.setHours(23, 59, 59, 999)
 
-    // جلب معرف "خزنة البازار"
     const bazaarSafe = await prisma.safe.findFirst({
       where: { name: 'خزنة البازار' }
     })
 
-    // 1. جلب فواتير البازار في الفترة المحددة
     const orders = await prisma.order.findMany({
       where: {
         createdAt: { gte: startDate, lte: endDate },
@@ -318,7 +376,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
       orderBy: { createdAt: 'desc' }
     })
 
-    // 2. جلب جميع أرقام أوردرات البازار الموجودة فعلياً في النظام
     const allExistingBazaarOrders = await prisma.order.findMany({
       where: {
         OR: [
@@ -331,7 +388,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
     })
     const existingOrderNos = new Set(allExistingBazaarOrders.map(o => o.orderNo))
 
-    // 3. جلب جميع الحركات النقدية
     const paymentsOrConditions: any[] = [
       { customer: { name: 'البازار' } },
       { customer: { source: 'BAZAAR' } },
@@ -356,7 +412,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
       orderBy: { createdAt: 'desc' }
     })
 
-    // 4. تصفية الحركات النقدية المعلقة لأوردرات محذوفة
     const orphanedPaymentIds: string[] = []
     const validPayments = payments.filter(pay => {
       const match = pay.description?.match(/#(\d+)/)
@@ -377,7 +432,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
       }).catch(err => console.error('Error cleaning up orphaned payments:', err))
     }
 
-    // 5. الإجماليات العامة وتفصيل الخزن
     const totalOrdersCount = orders.length
     const totalSalesAmount = orders.reduce((sum, o) => sum + o.totalAmount, 0)
     const totalPiecesCount = orders.reduce((sum, o) => sum + o.items.reduce((s, it) => s + it.quantity, 0), 0)
@@ -434,7 +488,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
     const netCash = totalCashIn - totalCashOut
     const safesSummary = Object.values(safesMap).sort((a: any, b: any) => b.net - a.net)
 
-    // 6. تقرير الموظفين
     const employeesMap: { [userId: string]: any } = {}
 
     orders.forEach(ord => {
@@ -483,7 +536,6 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
 
     const employeesSummary = Object.values(employeesMap).sort((a: any, b: any) => b.totalSales - a.totalSales)
 
-    // 7. تفاصيل الفواتير
     const formattedOrders = orders.map(ord => ({
       id: ord.id,
       orderNo: ord.orderNo,
@@ -519,7 +571,7 @@ export async function getBazaarReport(startDateStr?: string, endDateStr?: string
 }
 
 // =========================================================================
-// دالة حذف الأوردر المتكاملة (حذف الأوردر + حذف نقدية الخزنة + استرجاع المخزون + حذف القيد المحاسبي)
+// دالة حذف الأوردر المتكاملة
 // =========================================================================
 export async function deleteOrder(orderId: string) {
   try {
@@ -602,6 +654,7 @@ export async function deleteOrder(orderId: string) {
     revalidatePath('/')
     revalidatePath('/orders/list')
     revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
     revalidatePath('/admin/reports/bazaar')
     revalidatePath('/admin/reports/financial')
