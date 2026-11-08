@@ -2,12 +2,19 @@
 
 import { useState, useEffect, useMemo, useRef } from 'react'
 import Link from 'next/link'
-import { getJournalPrerequisites, postJournalEntry, getJournalEntries, JournalLineInput } from '@/app/journal-actions'
+import { 
+  getJournalPrerequisites, 
+  postJournalEntry, 
+  getJournalEntries, 
+  deleteJournalEntry, 
+  JournalLineInput 
+} from '@/app/journal-actions'
 
 export default function JournalEntriesPage() {
-  const [activeTab, setActiveTab] = useState<'NEW_ENTRY' | 'ENTRIES_LOG'>('NEW_ENTRY')
+  const [activeTab, setActiveTab] = useState<'NEW_ENTRY' | 'ENTRIES_LOG'>('ENTRIES_LOG')
   const [loading, setLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   const [prereqs, setPrereqs] = useState<{
     customers: any[]
@@ -201,6 +208,22 @@ export default function JournalEntriesPage() {
     }
   }
 
+  // حذف قيد
+  const handleDeleteEntry = async (entryId: string, entryNo: number) => {
+    if (!confirm(`هل أنت متأكد من حذف القيد رقم #${entryNo} نهائياً؟ سيتم التراجع عن أثره المحاسبي في الخزائن والحسابات.`)) return
+
+    setDeletingId(entryId)
+    const res = await deleteJournalEntry(entryId)
+    setDeletingId(null)
+
+    if (res.success) {
+      alert(res.message)
+      loadInitialData()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-8 font-sans pb-36" dir="rtl">
       
@@ -212,7 +235,7 @@ export default function JournalEntriesPage() {
             <div>
               <h1 className="text-2xl md:text-3xl font-black text-white">قيود اليومية العامة (Journal Entries)</h1>
               <p className="text-slate-400 text-xs mt-1">
-                إنشاء قيود محاسبية متزنة للعملاء، الموردين، الخزن، والبنوك وحسابات الشجرة الفرعية
+                إنشاء قيود محاسبية متزنة، ومتابعة وحذف القيود غير المرغوب فيها
               </p>
             </div>
           </div>
@@ -221,16 +244,6 @@ export default function JournalEntriesPage() {
         <div className="flex flex-wrap gap-2 items-center">
           <div className="bg-slate-900 p-1 rounded-xl border border-slate-700 flex gap-1">
             <button
-              onClick={() => setActiveTab('NEW_ENTRY')}
-              className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
-                activeTab === 'NEW_ENTRY' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800'
-              }`}
-            >
-              <span>✏️</span>
-              <span>إنشاء قيد جديد</span>
-            </button>
-
-            <button
               onClick={() => setActiveTab('ENTRIES_LOG')}
               className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === 'ENTRIES_LOG' ? 'bg-blue-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800'
@@ -238,6 +251,16 @@ export default function JournalEntriesPage() {
             >
               <span>📋</span>
               <span>سجل القيود المرحلة ({entries.length})</span>
+            </button>
+
+            <button
+              onClick={() => setActiveTab('NEW_ENTRY')}
+              className={`px-4 py-2 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+                activeTab === 'NEW_ENTRY' ? 'bg-amber-600 text-white shadow-md' : 'text-slate-400 hover:bg-slate-800'
+              }`}
+            >
+              <span>✏️</span>
+              <span>إنشاء قيد جديد</span>
             </button>
           </div>
 
@@ -279,7 +302,7 @@ export default function JournalEntriesPage() {
             </div>
 
             <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-xl overflow-visible">
-              <div className="p-4 bg-slate-850 bg-slate-900 border-b border-slate-700 flex justify-between items-center rounded-t-2xl">
+              <div className="p-4 bg-slate-900 border-b border-slate-700 flex justify-between items-center rounded-t-2xl">
                 <h3 className="font-bold text-white text-sm flex items-center gap-2">
                   <span>📑 بنود القيد المحاسبي المزدوج</span>
                   <span className="text-xs text-slate-400 font-normal">(حدد الحساب، واكتب القيمة في المدين أو الدائن)</span>
@@ -557,7 +580,7 @@ export default function JournalEntriesPage() {
           </form>
         )}
 
-        {/* سجل القيود المرحلة */}
+        {/* سجل القيود المرحلة المعروض في الصورة مع زر الحذف المضاف */}
         {activeTab === 'ENTRIES_LOG' && (
           <div className="space-y-4">
             <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-xl overflow-hidden">
@@ -569,7 +592,7 @@ export default function JournalEntriesPage() {
               <div className="divide-y divide-slate-700/60">
                 {entries.length === 0 ? (
                   <div className="p-12 text-center text-slate-400 font-bold">
-                    لا توجد قيود يومية مسجلة بعد. يمكنك إنشاء قيد جديد الآن.
+                    لا توجد قيود يومية مسجلة بعد.
                   </div>
                 ) : (
                   entries.map((entry) => (
@@ -583,15 +606,30 @@ export default function JournalEntriesPage() {
                           <span className="font-bold text-white text-base">{entry.description}</span>
                         </div>
 
-                        <div className="flex items-center gap-4 text-xs font-mono">
+                        <div className="flex items-center gap-3 text-xs font-mono">
                           <span className="text-slate-400">التاريخ: {new Date(entry.date).toLocaleDateString('ar-EG')}</span>
                           <span className="text-emerald-400 font-black text-sm">الإجمالي: {Number(entry.totalAmount).toLocaleString()} ج.م</span>
+                          
                           <button
                             type="button"
                             onClick={() => setSelectedEntryToPrint(entry)}
-                            className="bg-slate-700 hover:bg-slate-600 text-white px-2.5 py-1 rounded font-bold"
+                            className="bg-slate-700 hover:bg-slate-600 text-white px-2.5 py-1.5 rounded-lg font-bold flex items-center gap-1 transition"
+                            title="عرض وطباعة سند القيد"
                           >
-                            عرض وطباعة 🖨️
+                            <span>عرض وطباعة</span>
+                            <span>🖨️</span>
+                          </button>
+
+                          {/* زر حذف القيد المضاف حديثاً */}
+                          <button
+                            type="button"
+                            disabled={deletingId === entry.id}
+                            onClick={() => handleDeleteEntry(entry.id, entry.entryNo)}
+                            className="bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/40 px-2.5 py-1.5 rounded-lg font-bold transition flex items-center gap-1 disabled:opacity-50"
+                            title="حذف هذا القيد نهائياً وعكس أثره المالي"
+                          >
+                            <span>{deletingId === entry.id ? 'جاري الحذف...' : 'حذف'}</span>
+                            <span>🗑️</span>
                           </button>
                         </div>
                       </div>

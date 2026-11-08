@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/auth'
 import { revalidatePath } from 'next/cache'
+import { postPurchaseInvoiceToLedger } from '@/lib/accounting-engine'
 
 interface PurchaseLineItem {
   modelNo: string
@@ -67,7 +68,7 @@ async function getTargetWarehouse(tx: any, preferredWarehouseId?: string) {
   return defaultWh
 }
 
-// إنشاء فاتورة مشتريات / مرتجع جديدة وتحديث رصيد المخزن تلقائياً
+// إنشاء فاتورة مشتريات / مرتجع جديدة وتحديث رصيد المخزن وترحيل القيد المحاسبي تلقائياً
 export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
   try {
     const user = await checkAuthorizedUser()
@@ -86,6 +87,11 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
 
     if (!vendor) {
       return { success: false, error: 'المورد غير موجود' }
+    }
+
+    let safeObj: any = null
+    if (data.paymentStatus === 'CASH' && data.safeId) {
+      safeObj = await prisma.safe.findUnique({ where: { id: data.safeId } })
     }
 
     const invoiceDate = data.date ? new Date(data.date) : new Date()
@@ -281,6 +287,21 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
             })
           }
         }
+
+        // 5. الترحيل الآلي المحاسبي إلى دفتر الأستاذ العام
+        if (isPurchase) {
+          await postPurchaseInvoiceToLedger(tx, {
+            invoiceNo: invoiceNumber,
+            vendorId: vendor.id,
+            vendorName: vendor.name,
+            totalAmount,
+            isCash: data.paymentStatus === 'CASH',
+            safeId: data.paymentStatus === 'CASH' ? data.safeId : null,
+            safeName: safeObj?.name,
+            date: invoiceDate,
+            userId: user.id
+          })
+        }
       },
       { maxWait: 30000, timeout: 60000 }
     )
@@ -291,11 +312,13 @@ export async function createPurchaseInvoice(data: PurchaseInvoicePayload) {
     revalidatePath('/admin/cash-management')
     revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+    revalidatePath('/admin/journal-entries')
 
     return {
       success: true,
       message: data.invoiceType === 'PURCHASE' 
-        ? `تم حفظ فاتورة المشتريات رقم #${invoiceNumber} وتوريدها للمخزن بنجاح` 
+        ? `تم حفظ فاتورة المشتريات رقم #${invoiceNumber} وتوريدها للمخزن وترحيلها محاسبياً بنجاح` 
         : `تم حفظ مرتجع المشتريات رقم #${invoiceNumber} وخصمها من المخزن بنجاح`
     }
   } catch (error: any) {
@@ -383,7 +406,7 @@ export async function getPurchaseInvoiceDetails(invoiceNumber: string) {
   }
 }
 
-// تحديث بنود الفاتورة وإعادة وزن المخزون الكلي ومخزن المستودع
+// تحديث بنود الفاتورة وإعادة وزن المخزون الكلي ومخزن المستودع مع قيد الأستاذ
 export async function updatePurchaseInvoice(invoiceNumber: string, data: PurchaseInvoicePayload) {
   try {
     const user = await checkAuthorizedUser()
@@ -398,6 +421,11 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
     })
 
     if (!vendor) return { success: false, error: 'المورد غير موجود' }
+
+    let safeObj: any = null
+    if (data.paymentStatus === 'CASH' && data.safeId) {
+      safeObj = await prisma.safe.findUnique({ where: { id: data.safeId } })
+    }
 
     const invoiceDate = data.date ? new Date(data.date) : new Date()
 
@@ -435,9 +463,10 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
         }
       }
 
-      // 2. حذف السندات والبيانات القديمة
+      // 2. حذف السندات والبيانات والقيود المحاسبية القديمة
       await tx.payment.deleteMany({ where: { description: { contains: `#${invoiceNumber}` } } })
       await tx.vendorTransaction.deleteMany({ where: { reference: invoiceNumber } })
+      await (tx as any).journalEntry.deleteMany({ where: { reference: `PUR-${invoiceNumber}` } })
       await tx.purchaseInvoice.deleteMany({ where: { invoiceNo: invoiceNumber } })
 
       // 3. تطبيق الفاتورة الجديدة بالكامل
@@ -514,7 +543,7 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
           }
         })
 
-        // تحديث رصيد الصنف بالمخزن المستهدف
+        // تحديث رصيد الصنف بالمخزن المستهدف (WarehouseStock)
         await tx.warehouseStock.upsert({
           where: {
             warehouseId_productId: {
@@ -568,6 +597,21 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
           }
         })
       }
+
+      // إعادة ترحيل القيد المحاسبي المحدث
+      if (isPurchase) {
+        await postPurchaseInvoiceToLedger(tx, {
+          invoiceNo: invoiceNumber,
+          vendorId: vendor.id,
+          vendorName: vendor.name,
+          totalAmount,
+          isCash: data.paymentStatus === 'CASH',
+          safeId: data.paymentStatus === 'CASH' ? data.safeId : null,
+          safeName: safeObj?.name,
+          date: invoiceDate,
+          userId: user.id
+        })
+      }
     }, { maxWait: 30000, timeout: 60000 })
 
     revalidatePath('/admin/products')
@@ -576,15 +620,17 @@ export async function updatePurchaseInvoice(invoiceNumber: string, data: Purchas
     revalidatePath('/admin/cash-management')
     revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+    revalidatePath('/admin/journal-entries')
 
-    return { success: true, message: `تم تحديث بنود الفاتورة #${invoiceNumber} والمخزون بنجاح` }
+    return { success: true, message: `تم تحديث بنود الفاتورة #${invoiceNumber} والمخزون ودفتر الأستاذ بنجاح` }
   } catch (error: any) {
     console.error('Error updating purchase invoice:', error)
     return { success: false, error: error.message || 'فشل تحديث الفاتورة' }
   }
 }
 
-// دالة حذف وإلغاء فاتورة المشتريات أو المرتجع وعكس أثر المخزون العام ومخزن المستودع
+// دالة حذف وإلغاء فاتورة المشتريات أو المرتجع وعكس أثر المخزون العام ومخزن المستودع مع قيود اليومية
 export async function cancelVendorInvoice(invoiceNumber: string) {
   try {
     await checkAuthorizedUser()
@@ -630,6 +676,8 @@ export async function cancelVendorInvoice(invoiceNumber: string) {
 
       await tx.payment.deleteMany({ where: { description: { contains: `#${invoiceNumber}` } } })
       await tx.vendorTransaction.deleteMany({ where: { reference: invoiceNumber } })
+      // حذف القيد المحاسبي المترتب على الفاتورة
+      await (tx as any).journalEntry.deleteMany({ where: { reference: `PUR-${invoiceNumber}` } })
     })
 
     revalidatePath('/admin/products')
@@ -637,8 +685,10 @@ export async function cancelVendorInvoice(invoiceNumber: string) {
     revalidatePath('/admin/cash-management')
     revalidatePath('/admin/warehouses')
     revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+    revalidatePath('/admin/journal-entries')
 
-    return { success: true, message: `تم إلغاء وحذف الفاتورة #${invoiceNumber} وعكس أثر المخزون والنقدية بنجاح` }
+    return { success: true, message: `تم إلغاء وحذف الفاتورة #${invoiceNumber} وعكس أثر المخزون والنقدية ودفتر الأستاذ بنجاح` }
   } catch (error: any) {
     return { success: false, error: error.message || 'فشل إلغاء الفاتورة' }
   }

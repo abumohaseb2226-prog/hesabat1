@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/auth'
 import { revalidatePath } from 'next/cache'
+import { postSalesReturnToLedger } from '@/lib/accounting-engine'
 
 // فحص الصلاحية
 async function checkAuthUser() {
@@ -52,6 +53,7 @@ export async function getCustomerOrdersForReturn(customerId: string, searchNo: s
                 modelNo: true,
                 color: true,
                 price: true,
+                cost: true,
                 currentStock: true,
                 description: true
               }
@@ -76,6 +78,7 @@ export async function getCustomerOrdersForReturn(customerId: string, searchNo: s
         color: it.product.color,
         description: it.product.description || '',
         price: it.price,
+        cost: it.product.cost || 0,
         quantity: it.quantity,
         maxQuantity: it.quantity,
         discountPercent: it.discountPercent || 0
@@ -89,7 +92,7 @@ export async function getCustomerOrdersForReturn(customerId: string, searchNo: s
   }
 }
 
-// 2. إنشاء وتوثيق فاتورة المرتجع الموحدة (من فاتورة سابقة أو حر + استبدال + تسوية مالية ومخزنية)
+// 2. إنشاء وتوثيق فاتورة المرتجع الموحدة والترحيل الآلي لدفتر الأستاذ العام
 export async function createUnifiedReturnOrder(payload: {
   customerId: string
   originalOrderId?: string | null
@@ -126,21 +129,40 @@ export async function createUnifiedReturnOrder(payload: {
     })
     if (!customer) return { success: false, error: 'العميل غير موجود' }
 
+    let safeObj: any = null
+    if (payload.safeId) {
+      safeObj = await prisma.safe.findUnique({ where: { id: payload.safeId } })
+    }
+
     // حساب إجمالي قيمة المرتجع
     const totalRefund = payload.returnItems.reduce((sum, it) => sum + (it.quantity * it.unitPrice), 0)
 
     // حساب إجمالي قيمة الأصناف البديلة
     const totalExchange = (payload.exchangeItems || []).reduce((sum, it) => sum + (it.quantity * it.price), 0)
 
-    // فرق السعر (الموجب = العميل يدفع، السالب = العميل يسترد)
+    // فرق السعر
     const exchangeDiff = totalExchange - totalRefund
 
     if (payload.refundMethod === 'CASH' && !payload.safeId && payload.returnType !== 'EXCHANGE') {
       return { success: false, error: 'يرجى اختيار الخزنة للصرف النقدي' }
     }
 
+    // جلب تكاليف الأصناف المرتجعة لحساب خفض تكلفة المبيعات في دفتر الأستاذ
+    const returnProductIds = payload.returnItems.map(i => i.productId)
+    const productsInDb = await prisma.product.findMany({
+      where: { id: { in: returnProductIds } },
+      select: { id: true, cost: true }
+    })
+    const costMap = new Map<string, number>()
+    productsInDb.forEach(p => costMap.set(p.id, p.cost || 0))
+
+    const totalCogsReturned = payload.returnItems.reduce((sum, it) => {
+      const c = costMap.get(it.productId) || 0
+      return sum + (c * it.quantity)
+    }, 0)
+
     const result = await prisma.$transaction(async (tx) => {
-      // 1. التأكد من وجود Order مرجعي (إذا كان المرتجع حراً ولا يرتبط بأوردر سابق، نربطه بأحدث أوردر أو ننشئ مرجعاً رمزياً)
+      // 1. التأكد من وجود Order مرجعي
       let targetOrderId = payload.originalOrderId
 
       if (!targetOrderId) {
@@ -152,14 +174,13 @@ export async function createUnifiedReturnOrder(payload: {
         if (lastOrder) {
           targetOrderId = lastOrder.id
         } else {
-          // إنشاء أوردر رمزي لحفظ ترابط قاعدة البيانات
           const dummyOrder = await tx.order.create({
             data: {
               userId: user.id,
               customerId: customer.id,
               totalAmount: 0,
               deposit: 0,
-              notes: 'أوردر رمزي لمرتجع حر بدون فاتورة سابقة'
+              notes: 'أوردر مرجعي لمرتجع مبيعات حر'
             }
           })
           targetOrderId = dummyOrder.id
@@ -183,9 +204,8 @@ export async function createUnifiedReturnOrder(payload: {
         }
       })
 
-      // 3. إضافة بنود المرتجع وزيادة رصيد المخزن الفعلي للأصناف المرتجعة
+      // 3. بنود المرتجع وزيادة الرصيد المتاح بالمخزن
       for (const it of payload.returnItems) {
-        // إذا كان هناك orderItemId نستخدمه، وإن لم يكن نبحث عن أي بند سابق أو نتركه null
         let resolvedOrderItemId = it.orderItemId
         if (!resolvedOrderItemId) {
           const existingOi = await tx.orderItem.findFirst({
@@ -194,7 +214,6 @@ export async function createUnifiedReturnOrder(payload: {
           if (existingOi) {
             resolvedOrderItemId = existingOi.id
           } else {
-            // إنشاء بند أوردر لربط الـ foreign key
             const dummyOi = await tx.orderItem.create({
               data: {
                 orderId: targetOrderId,
@@ -218,7 +237,6 @@ export async function createUnifiedReturnOrder(payload: {
           }
         })
 
-        // زيادة المخزون الفعلي للصنف المرتجع
         await tx.product.update({
           where: { id: it.productId },
           data: { currentStock: { increment: it.quantity } }
@@ -228,7 +246,6 @@ export async function createUnifiedReturnOrder(payload: {
       // 4. معالجة الأصناف البديلة (في حالة الاستبدال)
       if (payload.returnType === 'EXCHANGE' && payload.exchangeItems && payload.exchangeItems.length > 0) {
         for (const exIt of payload.exchangeItems) {
-          // خصم بضاعة الاستبدال من المخزن
           await tx.product.update({
             where: { id: exIt.productId },
             data: { currentStock: { decrement: exIt.quantity } }
@@ -236,12 +253,11 @@ export async function createUnifiedReturnOrder(payload: {
         }
       }
 
-      // 5. التسوية المالية
+      // 5. التسوية المالية في الخزنة
       const actionDesc = payload.returnType === 'EXCHANGE'
         ? `تسوية استبدال لمرتجع #${newReturn.returnNo} للعميل: ${customer.name}`
         : `استرداد نقدي لمرتجع مبيعات #${newReturn.returnNo} للعميل: ${customer.name}`
 
-      // أ. صرف كاش من الخزنة
       if (payload.refundMethod === 'CASH' && payload.safeId && totalRefund > 0 && payload.returnType !== 'EXCHANGE') {
         await tx.payment.create({
           data: {
@@ -256,10 +272,8 @@ export async function createUnifiedReturnOrder(payload: {
         })
       }
 
-      // ب. في حالة الاستبدال وكان هناك فرق نقدي يستلزم الدفع أو الاسترداد في الخزنة
       if (payload.returnType === 'EXCHANGE' && payload.safeId && Math.abs(exchangeDiff) > 0) {
         if (exchangeDiff > 0) {
-          // العميل يدفع فرقاً للخزنة
           await tx.payment.create({
             data: {
               type: 'IN',
@@ -272,7 +286,6 @@ export async function createUnifiedReturnOrder(payload: {
             }
           })
         } else if (exchangeDiff < 0) {
-          // العميل يسترد فرقاً من الخزنة
           await tx.payment.create({
             data: {
               type: 'OUT',
@@ -287,21 +300,38 @@ export async function createUnifiedReturnOrder(payload: {
         }
       }
 
+      // 6. الترحيل الآلي المحاسبي إلى دفتر الأستاذ العام
+      await postSalesReturnToLedger(tx, {
+        returnNo: newReturn.returnNo,
+        customerId: customer.id,
+        customerName: customer.name,
+        refundAmount: totalRefund,
+        isCash: payload.refundMethod === 'CASH',
+        safeId: payload.refundMethod === 'CASH' ? payload.safeId : null,
+        safeName: safeObj?.name,
+        cogsAmount: Math.max(0, totalCogsReturned),
+        date: new Date(),
+        userId: user.id
+      })
+
       return newReturn
     })
 
     revalidatePath('/admin/returns')
     revalidatePath('/orders/list')
+    revalidatePath('/orders/return')
     revalidatePath('/admin/products')
     revalidatePath('/admin/cash-management')
     revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+    revalidatePath('/admin/journal-entries')
     revalidatePath(`/admin/reports/customer/${customer.id}`)
 
     return {
       success: true,
       returnNo: result.returnNo,
       returnId: result.id,
-      message: `تم بنجاح تسجيل المرتجع رقم #${result.returnNo} وتحديث المخزون والحسابات المالية.`
+      message: `تم بنجاح تسجيل المرتجع رقم #${result.returnNo} وتحديث المخزون ودفتر الأستاذ العام.`
     }
   } catch (error: any) {
     console.error('Error creating unified return order:', error)

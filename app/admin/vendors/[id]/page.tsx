@@ -1,8 +1,14 @@
 'use client'
 
 import { useEffect, useState, use, useMemo } from 'react'
-import { getVendorLedger, recordVendorInvoice } from '@/app/vendor-actions'
+import { 
+  getVendorLedger, 
+  recordVendorInvoice, 
+  deleteVendorOpeningBalance, 
+  updateVendorOpeningBalance 
+} from '@/app/vendor-actions'
 import { cancelVendorInvoice } from '@/app/purchase-actions'
+import { deletePayment } from '@/app/admin-actions'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { useSession } from 'next-auth/react'
@@ -20,12 +26,23 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
   const [endDate, setEndDate] = useState('')
   const [selectedSafe, setSelectedSafe] = useState('ALL')
   
+  // مودال الفاتورة السريعة
   const [showInvoiceModal, setShowInvoiceModal] = useState(false)
   const [invoiceNo, setInvoiceNo] = useState('')
   const [invoiceAmount, setInvoiceAmount] = useState('')
   const [invoiceNotes, setInvoiceNotes] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const [isDeletingInvoice, setIsDeletingInvoice] = useState(false)
+
+  // مودال تعديل الرصيد الافتتاحي السابق
+  const [showEditOpeningModal, setShowEditOpeningModal] = useState(false)
+  const [editingOpeningTrans, setEditingOpeningTrans] = useState<any>(null)
+  const [openingForm, setOpeningForm] = useState({
+    amount: '',
+    type: 'OPENING_CREDIT' as 'OPENING_CREDIT' | 'OPENING_DEBIT',
+    description: ''
+  })
+  const [isUpdatingOpening, setIsUpdatingOpening] = useState(false)
 
   useEffect(() => {
     loadData()
@@ -92,11 +109,80 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
     }
   }
 
+  // حذف السند النقدي (دفع أو استرداد) من كشف حساب المورد والخزنة معاً
+  const handleDeletePayment = async (trans: any) => {
+    if (!confirm(`هل أنت متأكد من حذف هذا السند النقدي بمبلغ ${trans.credit || trans.debit} ج.م؟ سيتم حذفه من الخزنة وكشف الحساب.`)) return
+
+    // البحث عن السند في جدول Payment وحذفه
+    const res = await deletePayment(trans.id)
+    if (res.success) {
+      alert('✅ تم حذف السند وعكس أثر الخزنة وكشف الحساب بنجاح')
+      loadData()
+    } else {
+      // إذا كان السند مسجلاً بحركة VendorTransaction
+      const resOpening = await deleteVendorOpeningBalance(trans.id)
+      if (resOpening.success) {
+        alert('✅ تم حذف السند بنجاح')
+        loadData()
+      } else {
+        alert('❌ خطأ: ' + (res.error || resOpening.error))
+      }
+    }
+  }
+
+  // حذف الرصيد الافتتاحي السابق
+  const handleDeleteOpeningBalance = async (transId: string) => {
+    if (!confirm('هل أنت متأكد من حذف حركة الرصيد الافتتاحي السابق لهذا المورد نهائياً؟')) return
+
+    const res = await deleteVendorOpeningBalance(transId)
+    if (res.success) {
+      alert(res.message)
+      loadData()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  // فتح نافذة تعديل الرصيد الافتتاحي
+  const handleOpenEditOpeningModal = (t: any) => {
+    setEditingOpeningTrans(t)
+    const isCredit = (Number(t.credit) || 0) > 0
+    setOpeningForm({
+      amount: (isCredit ? t.credit : t.debit).toString(),
+      type: isCredit ? 'OPENING_CREDIT' : 'OPENING_DEBIT',
+      description: t.description || ''
+    })
+    setShowEditOpeningModal(true)
+  }
+
+  // حفظ تعديل الرصيد الافتتاحي
+  const handleSaveOpeningEdit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!editingOpeningTrans) return
+
+    setIsUpdatingOpening(true)
+    const res = await updateVendorOpeningBalance({
+      transactionId: editingOpeningTrans.id,
+      amount: parseFloat(openingForm.amount) || 0,
+      type: openingForm.type,
+      description: openingForm.description
+    })
+    setIsUpdatingOpening(false)
+
+    if (res.success) {
+      alert(res.message)
+      setShowEditOpeningModal(false)
+      setEditingOpeningTrans(null)
+      loadData()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
   const { vendor, ledger = [], summary } = data || {}
 
-  // حساب الرصيد الافتتاحي السابق من حركات كشف الحساب إن وُجد
   const openingBalanceInfo = useMemo(() => {
-    const openingRow = ledger.find((t: any) => t.type === 'OPENING_BALANCE')
+    const openingRow = ledger.find((t: any) => t.isOpeningBalance || t.type === 'OPENING_BALANCE')
     if (!openingRow) return { amount: 0, isCredit: true }
     const isCredit = (Number(openingRow.credit) || 0) > 0
     return {
@@ -239,7 +325,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         </div>
       </div>
 
-      {/* الملخص المالي المصحح */}
+      {/* الملخص المالي */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
         <div className="bg-white p-4 rounded-xl shadow border-r-4 border-purple-500">
           <div className="text-xs text-gray-600 mb-1">الرصيد الافتتاحي السابق</div>
@@ -307,7 +393,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         </button>
       </div>
 
-      {/* وحدة الفلترة المتقدمة */}
+      {/* وحدة الفلترة */}
       <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 mb-4 no-print space-y-3">
         <div className="relative">
           <input
@@ -417,7 +503,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
         </div>
       </div>
 
-      {/* جدول الحركات المحاسبية */}
+      {/* جدول الحركات مع زر الحذف أمام سندات الاسترداد والدفع */}
       <div className="bg-white rounded-xl shadow overflow-x-auto">
         <table className="w-full text-right min-w-[900px]">
           <thead className="bg-gray-100">
@@ -429,7 +515,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
               <th className="p-3 text-xs font-bold text-center w-28 text-blue-700">دائن (له علينا)</th>
               <th className="p-3 text-xs font-bold text-center w-32">الرصيد</th>
               <th className="p-3 text-xs font-bold w-24">الموظف</th>
-              <th className="p-3 text-xs font-bold text-center w-28 no-print bg-gray-200">تحكم</th>
+              <th className="p-3 text-xs font-bold text-center w-32 no-print bg-gray-200">تحكم</th>
             </tr>
           </thead>
           <tbody>
@@ -442,11 +528,12 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
             ) : (
               filteredLedger.map((t: any, idx: number) => {
                 const isInvoice = (t.type === 'PURCHASE' || t.type === 'RETURN') && !t.isFromProducts && t.reference
-                const isOpeningBalance = t.type === 'OPENING_BALANCE'
+                const isOpeningBalance = t.isOpeningBalance || t.type === 'OPENING_BALANCE'
+                const isPaymentOrRefund = t.type === 'PAYMENT' || t.type === 'REFUND_IN'
 
                 return (
                   <tr 
-                    key={idx} 
+                    key={t.id || idx} 
                     className={`border-b hover:bg-gray-50 transition ${
                       isOpeningBalance ? 'bg-purple-50/70 font-semibold' : ''
                     }`}
@@ -515,7 +602,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
                       )}
                     </td>
 
-                    {/* خانة مدين (سددنا له / عليه) */}
+                    {/* خانة مدين */}
                     <td className="p-3 text-center">
                       {(Number(t.debit) || 0) > 0 ? (
                         <span className="font-bold text-red-600 font-mono">
@@ -526,7 +613,7 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
                       )}
                     </td>
 
-                    {/* خانة دائن (له علينا) */}
+                    {/* خانة دائن */}
                     <td className="p-3 text-center">
                       {(Number(t.credit) || 0) > 0 ? (
                         <span className="font-bold text-blue-700 font-mono">
@@ -545,8 +632,39 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
 
                     <td className="p-3 text-sm text-gray-600">{t.user}</td>
                     
+                    {/* عمود تحكم يشمل حذف سندات الاسترداد والدفع */}
                     <td className="p-3 text-center no-print bg-gray-50/50">
-                      {isInvoice ? (
+                      {isOpeningBalance ? (
+                        <div className="flex justify-center items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={() => handleOpenEditOpeningModal(t)}
+                            className="bg-amber-100 hover:bg-amber-200 text-amber-800 px-2 py-1 rounded text-xs font-bold transition shadow-sm"
+                            title="تعديل مبلغ أو طبيعة الرصيد الافتتاحي"
+                          >
+                            ✏️ تعديل
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteOpeningBalance(t.id)}
+                            className="bg-red-100 hover:bg-red-200 text-red-700 px-2 py-1 rounded text-xs font-bold transition shadow-sm"
+                            title="حذف وتصفير الرصيد الافتتاحي"
+                          >
+                            🗑️ حذف
+                          </button>
+                        </div>
+                      ) : isPaymentOrRefund ? (
+                        <div className="flex justify-center items-center">
+                          <button
+                            type="button"
+                            onClick={() => handleDeletePayment(t)}
+                            className="bg-red-100 hover:bg-red-200 text-red-700 px-2.5 py-1 rounded text-xs font-bold transition shadow-sm"
+                            title="حذف هذا السند النقدي وعكس الخزنة"
+                          >
+                            🗑️ حذف السند
+                          </button>
+                        </div>
+                      ) : isInvoice ? (
                         <div className="flex justify-center items-center gap-1.5">
                           <Link
                             href={`/admin/purchases/${encodeURIComponent(t.reference)}/edit`}
@@ -660,6 +778,71 @@ export default function VendorLedgerPage({ params }: { params: Promise<{ id: str
           </div>
         </div>
       )}
+
+      {/* Modal تعديل الرصيد الافتتاحي السابق */}
+      {showEditOpeningModal && editingOpeningTrans && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 z-50 flex items-center justify-center p-4 no-print">
+          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl">
+            <h3 className="font-bold text-lg mb-4 border-b pb-2 text-center text-purple-900">
+              ✏️ تعديل الرصيد الافتتاحي السابق للمورد
+            </h3>
+            <form onSubmit={handleSaveOpeningEdit} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">المبلغ (ج.م) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                  value={openingForm.amount}
+                  onChange={(e) => setOpeningForm({ ...openingForm, amount: e.target.value })}
+                  className="w-full border p-3 rounded-xl shadow-sm text-xl font-bold font-mono outline-none focus:border-purple-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">طبيعة الرصيد *</label>
+                <select
+                  value={openingForm.type}
+                  onChange={(e: any) => setOpeningForm({ ...openingForm, type: e.target.value })}
+                  className="w-full border p-3 rounded-xl shadow-sm text-sm font-bold bg-gray-50 outline-none"
+                >
+                  <option value="OPENING_CREDIT">دائن (له علينا رصيد سابق)</option>
+                  <option value="OPENING_DEBIT">مدين (عليه لنا رصيد سابق)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-gray-600 mb-1">البيان / ملاحظات</label>
+                <input
+                  type="text"
+                  value={openingForm.description}
+                  onChange={(e) => setOpeningForm({ ...openingForm, description: e.target.value })}
+                  className="w-full border p-3 rounded-xl shadow-sm text-xs outline-none"
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditOpeningModal(false)}
+                  className="flex-1 bg-gray-100 py-2.5 rounded-xl font-bold text-xs hover:bg-gray-200"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={isUpdatingOpening}
+                  className="flex-1 bg-purple-600 text-white py-2.5 rounded-xl font-bold text-xs shadow-lg hover:bg-purple-700"
+                >
+                  {isUpdatingOpening ? 'جاري التعديل...' : 'حفظ التعديل ✅'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }

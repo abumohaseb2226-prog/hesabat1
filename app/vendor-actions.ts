@@ -3,10 +3,10 @@
 import { prisma } from '@/lib/prisma'
 import { getServerSession } from 'next-auth'
 import { authOptions } from '@/auth'
+import { revalidatePath } from 'next/cache'
 
 // =========================================================================
 // 1. جلب كل الموردين مع احتساب الرصيد الصافي الحالي لكل مورد بدقة
-// (فواتير وسندات ورصيد افتتاحي مالي فقط، مع فصل مخزون الأصناف الافتتاحي)
 // =========================================================================
 export async function getVendors() {
   try {
@@ -14,12 +14,6 @@ export async function getVendors() {
       include: {
         _count: {
           select: { products: true },
-        },
-        products: {
-          select: {
-            stockQty: true,
-            cost: true,
-          }
         },
         transactions: {
           select: {
@@ -104,9 +98,7 @@ export async function getVendors() {
         }
       })
 
-      // دائن (له): رصيد سابق دائن + فواتير المشتريات + استرداد نقدية منه
       const totalCredits = openingCreditTotal + purchasesTotal + refundsInTotal
-      // مدين (عليه): رصيد سابق مدين + مرتجعات بضاعة + سداد دفعناه له + شيكات
       const totalDebits = openingDebitTotal + returnsTotal + transactionPayments + cashPaymentsTotal + additionalChecksTotal
 
       const balance = Math.round((totalCredits - totalDebits) * 100) / 100
@@ -169,7 +161,7 @@ export async function getVendorById(vendorId: string) {
 }
 
 // ========================================
-// 3. إضافة مورد جديد مع دعم الرصيد الافتتاحي المالي (دائن أو مدين)
+// 3. إضافة مورد جديد مع دعم الرصيد الافتتاحي المالي
 // ========================================
 export async function addVendor(data: {
   name: string
@@ -211,7 +203,6 @@ export async function addVendor(data: {
         },
       })
 
-      // إذا وُجد رصيد افتتاحي يتم تسجيله بحركة مالية رسمية في أول كشف الحساب
       if (initBal > 0) {
         await tx.vendorTransaction.create({
           data: {
@@ -362,7 +353,7 @@ export async function getVendorBalance(vendorId: string) {
 }
 
 // =========================================================================
-// 8. جلب كشف حساب المورد (دفتر الأستاذ) - خالي تماماً من بضاعة المخزون
+// 8. جلب كشف حساب المورد (دفتر الأستاذ)
 // =========================================================================
 export async function getVendorLedger(vendorId: string) {
   try {
@@ -374,7 +365,6 @@ export async function getVendorLedger(vendorId: string) {
       return { success: false, error: 'المورد غير موجود' }
     }
 
-    // عدد الأصناف المرتبطة فقط للعرض الإحصائي
     const productsCount = await prisma.product.count({
       where: {
         OR: [
@@ -384,7 +374,7 @@ export async function getVendorLedger(vendorId: string) {
       },
     })
 
-    // 1. حركات المورد المالية الفعلية
+    // حركات المورد المالية
     const transactions = await prisma.vendorTransaction.findMany({
       where: { vendorId },
       include: {
@@ -394,7 +384,6 @@ export async function getVendorLedger(vendorId: string) {
       orderBy: { createdAt: 'asc' },
     })
 
-    // 2. الشيكات
     const checks = await prisma.check.findMany({
       where: { vendorId },
       include: {
@@ -405,7 +394,6 @@ export async function getVendorLedger(vendorId: string) {
       orderBy: { issueDate: 'asc' },
     })
 
-    // 3. سندات الدفع النقدية الصادرة من الخزنة
     const payments = await prisma.payment.findMany({
       where: { 
         vendorId,
@@ -420,31 +408,7 @@ export async function getVendorLedger(vendorId: string) {
 
     const ledger: any[] = []
 
-    // تجميع حركات الفواتير والمدفوعات
-    const groupedByReference = new Map<string, any>()
-
     transactions.forEach(t => {
-      const refKey = t.reference ? `${t.type}_${t.reference}` : `single_${t.id}`
-
-      if (groupedByReference.has(refKey)) {
-        const existing = groupedByReference.get(refKey)
-        existing.amount += t.amount
-        existing.quantity = (existing.quantity || 0) + (t.quantity || 0)
-      } else {
-        groupedByReference.set(refKey, {
-          id: t.id,
-          type: t.type,
-          date: t.createdAt,
-          reference: t.reference || (t.type === 'PURCHASE' ? 'فاتورة شراء' : 'حركة مورد'),
-          description: t.description || (t.type === 'PURCHASE' ? 'فاتورة مشتريات' : 'حركة مورد'),
-          amount: t.amount,
-          quantity: t.quantity || null,
-          user: t.user?.name || 'غير معروف',
-        })
-      }
-    })
-
-    groupedByReference.forEach(t => {
       const isCashRefundFromVendor = t.type === 'REFUND_IN' || 
                                      t.type === 'RECEIPT' || 
                                      (t.reference && t.reference.includes('استرداد')) ||
@@ -454,78 +418,80 @@ export async function getVendorLedger(vendorId: string) {
         ledger.push({
           id: t.id,
           type: 'OPENING_BALANCE',
-          date: t.date,
+          date: t.createdAt,
           reference: t.reference || 'رصيد افتتاحي',
-          description: t.description || 'رصيد افتتاحي سابق (دائن - له علينا)',
+          description: t.description || 'رصيد افتتاحي سابق للمورد (دائن - له علينا)',
           debit: 0,
           credit: t.amount,
           quantity: null,
-          user: t.user,
+          user: t.user?.name || 'مدير النظام',
           isFromProducts: false,
+          isOpeningBalance: true,
         })
       } else if (t.type === 'OPENING_DEBIT') {
         ledger.push({
           id: t.id,
           type: 'OPENING_BALANCE',
-          date: t.date,
+          date: t.createdAt,
           reference: t.reference || 'رصيد افتتاحي',
-          description: t.description || 'رصيد افتتاحي سابق (مدين - عليه لنا)',
+          description: t.description || 'رصيد افتتاحي سابق للمورد (مدين - عليه لنا)',
           debit: t.amount,
           credit: 0,
           quantity: null,
-          user: t.user,
+          user: t.user?.name || 'مدير النظام',
           isFromProducts: false,
+          isOpeningBalance: true,
         })
       } else if (isCashRefundFromVendor) {
         ledger.push({
           id: t.id,
           type: 'REFUND_IN',
-          date: t.date,
+          date: t.createdAt,
           reference: t.reference || 'سند استرداد نقدي',
           description: t.description || 'استرداد نقدي من المورد (وارد للخزينة)',
           debit: 0,
           credit: t.amount,
           quantity: null,
-          user: t.user,
+          user: t.user?.name || 'غير معروف',
           isFromProducts: false,
         })
       } else if (t.type === 'PURCHASE') {
         ledger.push({
           id: t.id,
           type: 'PURCHASE',
-          date: t.date,
+          date: t.createdAt,
           reference: t.reference,
           description: t.description,
           debit: 0,
           credit: t.amount,
           quantity: t.quantity,
-          user: t.user,
+          user: t.user?.name || 'غير معروف',
           isFromProducts: false,
         })
       } else if (t.type === 'RETURN') {
         ledger.push({
           id: t.id,
           type: 'RETURN',
-          date: t.date,
+          date: t.createdAt,
           reference: t.reference,
           description: t.description,
           debit: t.amount,
           credit: 0,
           quantity: t.quantity,
-          user: t.user,
+          user: t.user?.name || 'غير معروف',
           isFromProducts: false,
         })
       } else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) {
         ledger.push({
           id: t.id,
           type: 'PAYMENT',
-          date: t.date,
+          date: t.createdAt,
           reference: t.reference,
           description: t.description,
           debit: t.amount,
           credit: 0,
           quantity: null,
-          user: t.user,
+          user: t.user?.name || 'غير معروف',
           safe: null,
           isFromProducts: false,
         })
@@ -652,7 +618,7 @@ export async function searchVendors(query: string) {
 }
 
 // ========================================
-// 10. حساب إجمالي مشتريات المورد من المنتجات (موجودة كما هي دون حذف)
+// 10. حساب إجمالي مشتريات المورد من المنتجات
 // ========================================
 export async function getVendorPurchasesFromProducts(vendorId: string) {
   try {
@@ -868,5 +834,84 @@ export async function getVendorsPerformanceReport(startDateStr?: string, endDate
   } catch (error: any) {
     console.error('Error in getVendorsPerformanceReport:', error)
     return { success: false, error: error.message || 'فشل جلب تقرير أداء الموردين' }
+  }
+}
+
+// =========================================================================
+// 13. حذف الرصيد الافتتاحي السابق للمورد (مُصدّرة بـ export)
+// =========================================================================
+export async function deleteVendorOpeningBalance(transactionId: string) {
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session?.user?.image) {
+      return { success: false, error: 'غير مصرح' }
+    }
+
+    const trans = await prisma.vendorTransaction.findUnique({
+      where: { id: transactionId }
+    })
+
+    if (!trans) {
+      return { success: false, error: 'حركة الرصيد الافتتاحي غير موجودة' }
+    }
+
+    await prisma.vendorTransaction.delete({
+      where: { id: transactionId }
+    })
+
+    revalidatePath('/admin/vendors')
+    revalidatePath(`/admin/vendors/${trans.vendorId}`)
+    revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+
+    return { success: true, message: 'تم حذف الرصيد الافتتاحي للمورد وتصفيره بنجاح' }
+  } catch (error: any) {
+    console.error('Error deleting vendor opening balance:', error)
+    return { success: false, error: error.message || 'فشل حذف الرصيد الافتتاحي' }
+  }
+}
+
+// =========================================================================
+// 14. تعديل الرصيد الافتتاحي السابق للمورد (مُصدّرة بـ export)
+// =========================================================================
+export async function updateVendorOpeningBalance(payload: {
+  transactionId: string
+  amount: number
+  type: 'OPENING_CREDIT' | 'OPENING_DEBIT'
+  description?: string
+}) {
+  try {
+    const session = await getServerSession(authOptions)
+    if (!session?.user?.image) {
+      return { success: false, error: 'غير مصرح' }
+    }
+
+    const numAmt = Math.abs(Number(payload.amount))
+    if (isNaN(numAmt) || numAmt <= 0) {
+      return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' }
+    }
+
+    const isCredit = payload.type === 'OPENING_CREDIT'
+
+    const updated = await prisma.vendorTransaction.update({
+      where: { id: payload.transactionId },
+      data: {
+        type: payload.type,
+        amount: numAmt,
+        description: payload.description || (isCredit 
+          ? `رصيد افتتاحي سابق للمورد (دائن - له علينا)` 
+          : `رصيد افتتاحي سابق للمورد (مدين - عليه لنا)`)
+      }
+    })
+
+    revalidatePath('/admin/vendors')
+    revalidatePath(`/admin/vendors/${updated.vendorId}`)
+    revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+
+    return { success: true, message: 'تم تعديل الرصيد الافتتاحي للمورد بنجاح' }
+  } catch (error: any) {
+    console.error('Error updating vendor opening balance:', error)
+    return { success: false, error: error.message || 'فشل تعديل الرصيد الافتتاحي' }
   }
 }

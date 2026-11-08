@@ -952,11 +952,62 @@ export async function updatePayment(id: string, data: any) {
 
 export async function deletePayment(id: string) {
     try {
-        await prisma.payment.delete({ where: { id } });
+        const payment = await prisma.payment.findUnique({ where: { id } });
+        
+        if (!payment) {
+          return { success: false, error: 'الحركة النقدية غير موجودة' };
+        }
+
+        await prisma.$transaction(async (tx) => {
+          // 1. إذا كانت الحركة خاصة بمورد (سند دفع أو سند استرداد نقدي)
+          // يتم حذف السجل المقابل لها من كشف حساب المورد VendorTransaction
+          if (payment.vendorId) {
+            await tx.vendorTransaction.deleteMany({
+              where: {
+                vendorId: payment.vendorId,
+                amount: payment.amount,
+                OR: [
+                  { description: payment.description },
+                  { reference: 'سند دفع للمورد' },
+                  { reference: 'سند استرداد من مورد' },
+                  { reference: `سند دفع #${payment.receiptNo}` }
+                ]
+              }
+            });
+          }
+
+          // 2. إذا كانت الحركة خاصة بموظف يتم حذف سطر كشف حساب الموظف المقابل
+          if (payment.description && (payment.description.includes('سلفة') || payment.description.includes('راتب'))) {
+            await tx.employeeTransaction.deleteMany({
+              where: {
+                safeId: payment.safeId,
+                description: payment.description,
+                amount: payment.type === 'OUT' ? -payment.amount : payment.amount
+              }
+            });
+          }
+
+          // 3. حذف القيد المحاسبي لدفتر الأستاذ
+          await (tx as any).journalEntry.deleteMany({
+            where: { reference: `PAY-${payment.receiptNo}` }
+          });
+
+          // 4. حذف السند من جدول Payment
+          await tx.payment.delete({ where: { id } });
+        });
+
         revalidatePath('/admin/cash-management');
         revalidatePath('/admin/reports');
+        revalidatePath('/admin/vendors');
+        if (payment.vendorId) {
+          revalidatePath(`/admin/vendors/${payment.vendorId}`);
+        }
+        revalidatePath('/admin/reports/financial');
+        revalidatePath('/admin/journal-entries');
+
         return { success: true };
     } catch (error) {
+        console.error("Failed to delete payment:", error);
         return { success: false, error: 'Failed to delete payment.' };
     }
 }

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { getFixedAssets, createFixedAsset, updateAssetStatus } from '@/app/asset-actions'
+import { getFixedAssets, createFixedAsset, updateAssetStatus, deleteFixedAsset } from '@/app/asset-actions'
 import { getSafesList } from '@/app/report-actions'
 import { getBankAccounts } from '@/app/financial-paper-actions'
 import { getOtherAccounts } from '@/app/debtor-creditor-actions'
@@ -12,6 +12,7 @@ export default function FixedAssetsPage() {
   const [assets, setAssets] = useState<any[]>([])
   const [summary, setSummary] = useState<any>({ totalAssetsValue: 0, totalPurchaseCost: 0, count: 0 })
   const [loading, setLoading] = useState(true)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
 
   // قنوات السداد
   const [safes, setSafes] = useState<any[]>([])
@@ -65,7 +66,6 @@ export default function FixedAssetsPage() {
     loadData()
   }, [])
 
-  // عند تغيير طريقة السداد، نضبط الـ targetId الافتراضي
   useEffect(() => {
     if (form.paymentMethod === 'CASH_SAFE' && safes.length > 0) {
       setForm(prev => ({ ...prev, paymentTargetId: safes[0].id }))
@@ -104,6 +104,21 @@ export default function FixedAssetsPage() {
     if (res.success) {
       alert(res.message)
       setShowAddModal(false)
+      loadData()
+    } else {
+      alert('❌ خطأ: ' + res.error)
+    }
+  }
+
+  const handleDeleteAsset = async (assetId: string, assetName: string, assetCode: string) => {
+    if (!confirm(`هل أنت متأكد من حذف الأصل (${assetName} - كود: ${assetCode})؟ سيتم إلغاء أثر قيده وسداده المالي.`)) return
+
+    setDeletingId(assetId)
+    const res = await deleteFixedAsset(assetId)
+    setDeletingId(null)
+
+    if (res.success) {
+      alert(res.message)
       loadData()
     } else {
       alert('❌ خطأ: ' + res.error)
@@ -184,7 +199,7 @@ export default function FixedAssetsPage() {
           ))}
         </div>
 
-        {/* 3. جدول الأصول */}
+        {/* 3. جدول الأصول مع عمود التحكم وزر الحذف المضاف */}
         <div className="bg-slate-800 border border-slate-700 rounded-2xl shadow-xl overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-right text-sm">
@@ -198,13 +213,14 @@ export default function FixedAssetsPage() {
                   <th className="p-3.5 text-center">القيمة الحالية</th>
                   <th className="p-3.5">طريقة السداد</th>
                   <th className="p-3.5 text-center">الحالة</th>
+                  <th className="p-3.5 text-center w-24">تحكم</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-700/60">
                 {loading ? (
-                  <tr><td colSpan={8} className="p-12 text-center text-slate-400 font-bold">جاري تحميل الأصول...</td></tr>
+                  <tr><td colSpan={9} className="p-12 text-center text-slate-400 font-bold">جاري تحميل الأصول...</td></tr>
                 ) : filteredAssets.length === 0 ? (
-                  <tr><td colSpan={8} className="p-12 text-center text-slate-400 font-bold">لا توجد أصول مسجلة في هذا التصنيف</td></tr>
+                  <tr><td colSpan={9} className="p-12 text-center text-slate-400 font-bold">لا توجد أصول مسجلة في هذا التصنيف</td></tr>
                 ) : (
                   filteredAssets.map((asset) => (
                     <tr key={asset.id} className="hover:bg-slate-700/30 transition">
@@ -247,6 +263,20 @@ export default function FixedAssetsPage() {
                         }`}>
                           {asset.status === 'ACTIVE' ? 'يعمل بحالة جيدة' : asset.status === 'MAINTENANCE' ? 'تحت الصيانة' : 'مكهن'}
                         </span>
+                      </td>
+
+                      {/* زر الحذف المضاف */}
+                      <td className="p-3.5 text-center">
+                        <button
+                          type="button"
+                          disabled={deletingId === asset.id}
+                          onClick={() => handleDeleteAsset(asset.id, asset.name, asset.assetCode)}
+                          className="bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-500/40 px-2.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1 mx-auto disabled:opacity-50"
+                          title="حذف هذا الأصل نهائياً وإلغاء أثر قيده"
+                        >
+                          <span>{deletingId === asset.id ? '...' : 'حذف'}</span>
+                          <span>🗑️</span>
+                        </button>
                       </td>
                     </tr>
                   ))
@@ -306,7 +336,6 @@ export default function FixedAssetsPage() {
                 </div>
               </div>
 
-              {/* طريقة السداد */}
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">طريقة سداد تكلفة شراء الأصل *</label>
                 <select

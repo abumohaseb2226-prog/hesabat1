@@ -55,7 +55,7 @@ export async function getFixedAssets() {
   }
 }
 
-// 2. شراء وتسجيل أصل ثابت جديد مع سداد قيمته نقدياً أو بنكياً أو عبر دائن
+// 2. شراء وتسجيل أصل ثابت جديد
 export async function createFixedAsset(data: {
   name: string
   assetCode?: string
@@ -66,7 +66,7 @@ export async function createFixedAsset(data: {
   location?: string
   notes?: string
   paymentMethod: 'CASH_SAFE' | 'BANK' | 'DEBTOR_CREDIT' | 'VENDOR_CREDIT'
-  paymentTargetId: string // safeId أو bankAccountId أو creditorAccountId أو vendorId
+  paymentTargetId: string
 }) {
   try {
     const user = await checkAccountingAuth()
@@ -80,7 +80,6 @@ export async function createFixedAsset(data: {
     const pDate = data.purchaseDate ? new Date(data.purchaseDate) : new Date()
 
     const asset = await prisma.$transaction(async (tx) => {
-      // 1. تسجيل الأصل
       const newAsset = await tx.fixedAsset.create({
         data: {
           assetCode: code,
@@ -88,7 +87,7 @@ export async function createFixedAsset(data: {
           category: data.category,
           purchaseDate: pDate,
           purchaseCost: cost,
-          currentValue: cost, // القيمة الدفترية تبدأ بنفس تكلفة الشراء
+          currentValue: cost,
           depreciationRate: Number(data.depreciationRate) || 0,
           location: data.location || 'المصنع / المعرض',
           notes: data.notes || '',
@@ -101,9 +100,7 @@ export async function createFixedAsset(data: {
         }
       })
 
-      // 2. معالجة سداد تكلفة شراء الأصل
       if (data.paymentMethod === 'CASH_SAFE') {
-        // خروج نقدية من الخزنة كسند صرف رأسمالي لشراء أصل
         await tx.payment.create({
           data: {
             type: 'OUT',
@@ -116,7 +113,6 @@ export async function createFixedAsset(data: {
           }
         })
       } else if (data.paymentMethod === 'BANK') {
-        // سحب بنكي لشراء الأصل
         await tx.bankAccount.update({
           where: { id: data.paymentTargetId },
           data: { balance: { decrement: cost } }
@@ -131,7 +127,6 @@ export async function createFixedAsset(data: {
           }
         })
       } else if (data.paymentMethod === 'DEBTOR_CREDIT') {
-        // إثبات مديونية الأصل على حساب دائن (استلاف لتمويل الأصل)
         await tx.otherAccount.update({
           where: { id: data.paymentTargetId },
           data: { balance: { increment: cost } }
@@ -147,7 +142,6 @@ export async function createFixedAsset(data: {
           }
         })
       } else if (data.paymentMethod === 'VENDOR_CREDIT') {
-        // إثبات قيمة الأصل في كشف حساب المورد (شراء آجل)
         await tx.vendorTransaction.create({
           data: {
             vendorId: data.paymentTargetId,
@@ -175,7 +169,7 @@ export async function createFixedAsset(data: {
   }
 }
 
-// 3. تعديل حالة الأصل (تشغيل، صيانة، تخريد، بيع)
+// 3. تعديل حالة الأصل
 export async function updateAssetStatus(assetId: string, status: string, notes?: string) {
   try {
     await checkAccountingAuth()
@@ -190,5 +184,64 @@ export async function updateAssetStatus(assetId: string, status: string, notes?:
     return { success: true, message: 'تم تحديث حالة الأصل' }
   } catch (error: any) {
     return { success: false, error: error.message }
+  }
+}
+
+// 4. حذف أصل ثابت وعكس أثر سداده المالي
+export async function deleteFixedAsset(assetId: string) {
+  try {
+    await checkAccountingAuth()
+
+    const asset = await prisma.fixedAsset.findUnique({
+      where: { id: assetId }
+    })
+
+    if (!asset) {
+      return { success: false, error: 'الأصل غير موجود' }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. حذف حركات السداد المالي المرتبطة بكود الأصل وعكس أثرها
+      if (asset.paymentMethod === 'CASH_SAFE') {
+        await tx.payment.deleteMany({
+          where: { description: { contains: asset.assetCode } }
+        })
+      } else if (asset.paymentMethod === 'BANK' && asset.bankAccountId) {
+        await tx.bankAccount.update({
+          where: { id: asset.bankAccountId },
+          data: { balance: { increment: asset.purchaseCost } }
+        })
+        await tx.bankTransaction.deleteMany({
+          where: { description: { contains: asset.name } }
+        })
+      } else if (asset.paymentMethod === 'DEBTOR_CREDIT' && asset.creditorAccountId) {
+        await tx.otherAccount.update({
+          where: { id: asset.creditorAccountId },
+          data: { balance: { decrement: asset.purchaseCost } }
+        })
+        await tx.accountTransaction.deleteMany({
+          where: { description: { contains: asset.assetCode } }
+        })
+      } else if (asset.paymentMethod === 'VENDOR_CREDIT' && asset.vendorId) {
+        await tx.vendorTransaction.deleteMany({
+          where: { reference: asset.assetCode }
+        })
+      }
+
+      // 2. حذف سجل الأصل نفسه
+      await tx.fixedAsset.delete({
+        where: { id: asset.id }
+      })
+    })
+
+    revalidatePath('/admin/assets')
+    revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+
+    return { success: true, message: `تم حذف الأصل (${asset.name}) وعكس أثر سداده المالي بنجاح` }
+  } catch (error: any) {
+    console.error('Error deleting fixed asset:', error)
+    return { success: false, error: error.message || 'فشل حذف الأصل' }
   }
 }

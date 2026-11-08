@@ -129,7 +129,7 @@ export async function postJournalEntry(payload: {
 
         const lineDesc = line.notes?.trim() || payload.description.trim()
 
-        // حساب فرعي في شجرة الحسابات (خصم مسموح به، مصروف مخصص...)
+        // حساب فرعي في شجرة الحسابات
         if (line.accountType === 'CHART_ACCOUNT' && line.accountId) {
           const chartAcc = await (tx as any).chartAccount.findUnique({ where: { id: line.accountId } })
           if (chartAcc) {
@@ -252,8 +252,8 @@ export async function postJournalEntry(payload: {
   }
 }
 
-// 3. جلب سجل القيود المرحلة بـ Prisma
-export async function getJournalEntries(limit = 50) {
+// 3. جلب سجل القيود المرحلة
+export async function getJournalEntries(limit = 100) {
   try {
     await checkAccountingAuth()
 
@@ -276,5 +276,96 @@ export async function getJournalEntries(limit = 50) {
   } catch (error: any) {
     console.error('Error fetching journal entries:', error)
     return { success: false, error: error.message, entries: [] }
+  }
+}
+
+// 4. حذف قيد اليومية وعكس أثره المحاسبي بالكامل
+export async function deleteJournalEntry(entryId: string) {
+  try {
+    await checkAccountingAuth()
+
+    const entry = await (prisma as any).journalEntry.findUnique({
+      where: { id: entryId },
+      include: { lines: true }
+    })
+
+    if (!entry) {
+      return { success: false, error: 'القيد غير موجود' }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. عكس الأثر على شجرة الحسابات والدفاتر
+      for (const line of entry.lines) {
+        const lineDebit = Number(line.debit) || 0
+        const lineCredit = Number(line.credit) || 0
+
+        if (line.accountType === 'CHART_ACCOUNT' && line.accountId) {
+          const chartAcc = await (tx as any).chartAccount.findUnique({ where: { id: line.accountId } })
+          if (chartAcc) {
+            const isDebitAcc = chartAcc.type === 'DEBIT'
+            const reverseChange = isDebitAcc ? (lineCredit - lineDebit) : (lineDebit - lineCredit)
+            await (tx as any).chartAccount.update({
+              where: { id: line.accountId },
+              data: { balance: { increment: reverseChange } }
+            })
+          }
+        }
+
+        // عكس حركة البنك
+        if (line.accountType === 'BANK' && line.accountId) {
+          const isDeposit = lineDebit > 0
+          const reverseAmount = isDeposit ? -lineDebit : lineCredit
+          await tx.bankAccount.update({
+            where: { id: line.accountId },
+            data: { balance: { increment: reverseAmount } }
+          })
+          await tx.bankTransaction.deleteMany({
+            where: { reference: `قيد #${entry.entryNo}` }
+          })
+        }
+
+        // عكس حركة الدائن والمدين
+        if (line.accountType === 'OTHER_ACCOUNT' && line.accountId) {
+          const isCredit = lineCredit > 0
+          const reverseAmount = isCredit ? -lineCredit : lineDebit
+          await tx.otherAccount.update({
+            where: { id: line.accountId },
+            data: { balance: { increment: reverseAmount } }
+          })
+          await tx.accountTransaction.deleteMany({
+            where: { description: { contains: `قيد #${entry.entryNo}` } }
+          })
+        }
+      }
+
+      // 2. حذف الحركات النقدية المرتبطة بهذا القيد
+      await tx.payment.deleteMany({
+        where: { description: { contains: `قيد #${entry.entryNo}` } }
+      })
+
+      // 3. حذف حركات الموردين المرتبطة بالقيد
+      await tx.vendorTransaction.deleteMany({
+        where: { reference: `قيد #${entry.entryNo}` }
+      })
+
+      // 4. حذف بنود القيد والقيد نفسه
+      await (tx as any).journalEntryLine.deleteMany({
+        where: { entryId: entry.id }
+      })
+
+      await (tx as any).journalEntry.delete({
+        where: { id: entry.id }
+      })
+    })
+
+    revalidatePath('/admin/journal-entries')
+    revalidatePath('/admin/cash-management')
+    revalidatePath('/admin/reports')
+    revalidatePath('/admin/reports/financial')
+
+    return { success: true, message: `تم حذف القيد رقم #${entry.entryNo} وعكس أثره المحاسبي بنجاح` }
+  } catch (error: any) {
+    console.error('Error deleting journal entry:', error)
+    return { success: false, error: error.message || 'فشل حذف القيد' }
   }
 }

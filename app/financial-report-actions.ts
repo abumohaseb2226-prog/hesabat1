@@ -22,6 +22,15 @@ async function checkAccountingAuth() {
   return user
 }
 
+// قائمة الأكواد القياسية للنظام (لمنع اعتبارها حسابات مخصصة قابلة للحذف في الشجرة)
+const STANDARD_SYSTEM_CODES = new Set([
+  '1101', '1102', '1103', '1104',
+  '2101', '2102', '2103', '2104',
+  '3101', '3201',
+  '4101', '4201',
+  '5101', '5201', '5301'
+])
+
 // =========================================================================
 // 1. تقرير قائمة الدخل والأرباح والخسائر (Income Statement / P&L)
 // =========================================================================
@@ -39,7 +48,40 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
     const startDate = new Date(startStr + 'T00:00:00')
     const endDate = new Date(endStr + 'T23:59:59.999')
 
-    // أ. المبيعات وبنود الفواتير في الفترة
+    const journalLines = await (prisma as any).journalEntryLine.findMany({
+      where: {
+        entry: { date: { gte: startDate, lte: endDate } }
+      },
+      include: {
+        entry: { select: { date: true, description: true, reference: true } }
+      }
+    }).catch(() => [])
+
+    let glGrossSales = 0
+    let glSalesReturns = 0
+    let glCOGS = 0
+    let glOperatingExpenses = 0
+    let glSalariesExpenses = 0
+
+    journalLines.forEach((l: any) => {
+      const debit = Number(l.debit) || 0
+      const credit = Number(l.credit) || 0
+      const desc = (l.notes || l.entry?.description || '').toLowerCase()
+      const ref = (l.entry?.reference || '').toUpperCase()
+
+      if (l.accountType === 'REVENUE' && credit > 0 && !desc.includes('مردود') && !ref.startsWith('RET-')) {
+        glGrossSales += credit
+      } else if (l.accountType === 'REVENUE' && (debit > 0 || desc.includes('مردود') || ref.startsWith('RET-'))) {
+        glSalesReturns += debit
+      } else if (l.accountType === 'EXPENSE' && (ref.startsWith('COGS-') || desc.includes('تكلفة البضاعة'))) {
+        glCOGS += (debit - credit)
+      } else if (l.accountType === 'EMPLOYEE' || desc.includes('راتب') || desc.includes('سلفة')) {
+        glSalariesExpenses += debit
+      } else if (l.accountType === 'EXPENSE') {
+        glOperatingExpenses += debit
+      }
+    })
+
     const orders = await prisma.order.findMany({
       where: { createdAt: { gte: startDate, lte: endDate } },
       include: {
@@ -51,7 +93,6 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
       }
     })
 
-    // ب. مرتجعات المبيعات في الفترة
     const returns = await prisma.returnOrder.findMany({
       where: { date: { gte: startDate, lte: endDate }, status: { not: 'CANCELLED' } },
       include: {
@@ -61,97 +102,15 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
       }
     })
 
-    // ج. جلب استقطاعات الخصم المسموح به والمصروفات من شجرة الحسابات وقيود اليومية
-    const chartAccounts = await (prisma as any).chartAccount.findMany().catch(() => [])
-    const chartMap = new Map<string, any>()
-    chartAccounts.forEach((ca: any) => chartMap.set(ca.id, ca))
+    let grossSalesRevenue = glGrossSales
+    let totalReturnsRevenue = glSalesReturns
+    let netCOGS = glCOGS
+    let totalOperatingExpenses = glOperatingExpenses
+    let totalSalariesExpenses = glSalariesExpenses
 
-    let totalDiscountsAllowed = 0
-    let totalDiscountsReceived = 0
-    let journalExpenses = 0
-
-    // قراءة قيود اليومية المسجلة خلال الفترة
-    const journalLines = await (prisma as any).journalEntryLine.findMany({
-      where: {
-        entry: { date: { gte: startDate, lte: endDate } }
-      },
-      include: {
-        entry: { select: { date: true, description: true } }
-      }
-    }).catch(() => [])
-
-    journalLines.forEach((jl: any) => {
-      const ca = jl.accountId ? chartMap.get(jl.accountId) : null
-      const accName = (jl.accountName || '').toLowerCase()
-      const notes = (jl.notes || '').toLowerCase()
-      const entryDesc = (jl.entry?.description || '').toLowerCase()
-
-      const isDiscountAllowed =
-        (ca && (ca.parentCode === '42' || ca.code.startsWith('42') || ca.name.includes('مسموح'))) ||
-        accName.includes('مسموح') ||
-        notes.includes('مسموح') ||
-        entryDesc.includes('خصم مسموح')
-
-      const isDiscountReceived =
-        (ca && (ca.name.includes('مكتسب') || ca.parentCode === '4' || ca.code.startsWith('43'))) ||
-        accName.includes('مكتسب') ||
-        notes.includes('مكتسب') ||
-        entryDesc.includes('خصم مكتسب')
-
-      const isCustomExpense =
-        (ca && (ca.category === 'EXPENSE' || ca.parentCode === '52' || ca.code.startsWith('52'))) ||
-        jl.accountType === 'EXPENSE'
-
-      if (isDiscountAllowed) {
-        totalDiscountsAllowed += (jl.debit - jl.credit)
-      } else if (isDiscountReceived) {
-        totalDiscountsReceived += (jl.credit - jl.debit)
-      } else if (isCustomExpense) {
-        journalExpenses += (jl.debit - jl.credit)
-      }
-    })
-
-    // إذا لم تكن هناك قيود خلال الفترة ولكن الحساب المخصص للخصم له رصيد في الشجرة
-    if (totalDiscountsAllowed === 0) {
-      chartAccounts.forEach((ca: any) => {
-        if (ca.parentCode === '42' || ca.name.includes('مسموح')) {
-          totalDiscountsAllowed += (ca.balance || 0)
-        }
-      })
-    }
-
-    // د. المصروفات العامة والتشغيلية من الخزنة
-    const operatingExpenses = await prisma.payment.findMany({
-      where: {
-        createdAt: { gte: startDate, lte: endDate },
-        type: 'OUT',
-        vendorId: null,
-        customerId: null,
-        checkRefId: null,
-        NOT: [
-          { description: { contains: 'أصل ثابت' } },
-          { description: { contains: 'شراء أصل' } },
-          { description: { contains: 'سلفة/قرض' } },
-          { description: { contains: 'سداد سلفة' } },
-          { description: { contains: 'رد سداد' } },
-          { description: { contains: 'للعميل' } },
-          { description: { contains: 'للمورد' } }
-        ]
-      }
-    })
-
-    // هـ. رواتب ومسحوبات الموظفين
-    const employeeExpenses = await prisma.employeeTransaction.findMany({
-      where: {
-        transactionDate: { gte: startDate, lte: endDate },
-        amount: { gt: 0 }
-      }
-    })
-
-    // 1. حساب المبيعات وتكلفتها
-    let grossSalesRevenue = 0
-    let grossCOGS = 0
     let totalPiecesSold = 0
+    let operationalSales = 0
+    let operationalCOGS = 0
 
     const productProfitMap = new Map<string, {
       modelNo: string
@@ -163,14 +122,14 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
     }>()
 
     orders.forEach(ord => {
-      grossSalesRevenue += ord.totalAmount
+      operationalSales += ord.totalAmount
       ord.items.forEach(it => {
         const qty = it.quantity || 0
         const revenue = (it.price || 0) * qty
         const cost = (it.product?.cost || 0) * qty
 
         totalPiecesSold += qty
-        grossCOGS += cost
+        operationalCOGS += cost
 
         const key = `${it.product?.modelNo || 'عام'}_${it.product?.color || 'افتراضي'}`
         if (!productProfitMap.has(key)) {
@@ -192,32 +151,60 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
       })
     })
 
-    // 2. حساب المرتجعات
-    let totalReturnsRevenue = 0
-    let totalReturnsCost = 0
     let totalPiecesReturned = 0
+    let operationalReturns = 0
+    let operationalReturnCost = 0
 
     returns.forEach(ret => {
-      totalReturnsRevenue += ret.totalRefund
+      operationalReturns += ret.totalRefund
       ret.items.forEach(ri => {
         const qty = ri.quantity || 0
         const cost = (ri.product?.cost || 0) * qty
         totalPiecesReturned += qty
-        totalReturnsCost += cost
+        operationalReturnCost += cost
       })
     })
 
-    // صافي إيراد المبيعات بعد خصم المرتجعات والخصم المسموح به
-    const netSalesRevenue = grossSalesRevenue - totalReturnsRevenue - totalDiscountsAllowed
-    const netCOGS = grossCOGS - totalReturnsCost - totalDiscountsReceived
+    if (grossSalesRevenue === 0) grossSalesRevenue = operationalSales
+    if (totalReturnsRevenue === 0) totalReturnsRevenue = operationalReturns
+    if (netCOGS === 0) netCOGS = Math.max(0, operationalCOGS - operationalReturnCost)
+
+    const operatingExpenses = await prisma.payment.findMany({
+      where: {
+        createdAt: { gte: startDate, lte: endDate },
+        type: 'OUT',
+        vendorId: null,
+        customerId: null,
+        checkRefId: null,
+        NOT: [
+          { description: { contains: 'أصل ثابت' } },
+          { description: { contains: 'شراء أصل' } },
+          { description: { contains: 'سلفة/قرض' } },
+          { description: { contains: 'سداد سلفة' } },
+          { description: { contains: 'رد سداد' } },
+          { description: { contains: 'للعميل' } },
+          { description: { contains: 'للمورد' } }
+        ]
+      },
+      orderBy: { createdAt: 'desc' }
+    })
+
+    if (totalOperatingExpenses === 0) {
+      totalOperatingExpenses = operatingExpenses.reduce((s, p) => s + p.amount, 0)
+    }
+
+    if (totalSalariesExpenses === 0) {
+      const emps = await prisma.employeeTransaction.findMany({
+        where: { transactionDate: { gte: startDate, lte: endDate }, amount: { gt: 0 } }
+      })
+      totalSalariesExpenses = emps.reduce((s, e) => s + e.amount, 0)
+    }
+
+    const netSalesRevenue = grossSalesRevenue - totalReturnsRevenue
     const grossProfit = netSalesRevenue - netCOGS
     const grossProfitMargin = netSalesRevenue > 0 ? (grossProfit / netSalesRevenue) * 100 : 0
 
-    const cashOperatingExpenses = operatingExpenses.reduce((s, p) => s + p.amount, 0)
-    const totalOperatingExpenses = cashOperatingExpenses + Math.max(0, journalExpenses)
-    const totalSalariesExpenses = employeeExpenses.reduce((s, e) => s + e.amount, 0)
     const totalExpenses = totalOperatingExpenses + totalSalariesExpenses
-
     const netProfit = grossProfit - totalExpenses
     const netProfitMargin = netSalesRevenue > 0 ? (netProfit / netSalesRevenue) * 100 : 0
 
@@ -231,14 +218,19 @@ export async function getIncomeStatement(startDateStr?: string, endDateStr?: str
         sales: {
           grossSalesRevenue,
           totalReturnsRevenue,
-          totalDiscountsAllowed,
+          totalDiscountsAllowed: 0,
           netSalesRevenue,
           totalPiecesSold,
           totalPiecesReturned,
           netPiecesSold: totalPiecesSold - totalPiecesReturned,
           ordersCount: orders.length
         },
-        cogs: { grossCOGS, totalReturnsCost, totalDiscountsReceived, netCOGS },
+        cogs: {
+          grossCOGS: operationalCOGS,
+          totalReturnsCost: operationalReturnCost,
+          totalDiscountsReceived: 0,
+          netCOGS
+        },
         profitability: {
           grossProfit,
           grossProfitMargin,
@@ -270,6 +262,7 @@ export async function getBalanceSheet() {
   try {
     await checkAccountingAuth()
 
+    // 1. النقدية بالخزائن والمحافظ
     const safes = await prisma.safe.findMany({
       include: { payments: true, incomingTransfers: true }
     })
@@ -278,17 +271,18 @@ export async function getBalanceSheet() {
       let balance = 0
       s.payments.forEach(p => {
         if (p.type === 'IN' || p.type === 'PAYMENT_COLLECTION') balance += p.amount
-        else if (p.type === 'OUT') balance -= p.amount
-        else if (p.type === 'TRANSFER') balance -= p.amount
+        else if (p.type === 'OUT' || p.type === 'TRANSFER') balance -= p.amount
       })
       s.incomingTransfers.forEach(p => { balance += p.amount })
-      return { id: s.id, name: s.name, balance }
+      return { id: s.id, name: s.name, balance: Math.round(balance * 100) / 100 }
     })
     const totalCashInSafes = safesBalances.reduce((sum, s) => sum + s.balance, 0)
 
+    // 2. البنوك
     const banks = await prisma.bankAccount.findMany()
     const totalBankBalances = banks.reduce((sum, b) => sum + (Number(b.balance) || 0), 0)
 
+    // 3. العملاء والمدينون
     const customers = await prisma.customer.findMany({
       include: {
         orders: {
@@ -331,21 +325,24 @@ export async function getBalanceSheet() {
     totalCustomerCreditors = Math.round(totalCustomerCreditors * 100) / 100
     const netCustomerReceivables = Math.round((totalCustomerDebtors - totalCustomerCreditors) * 100) / 100
 
+    // 4. المخزون السلعي
     const products = await prisma.product.findMany({
       select: { currentStock: true, cost: true, price: true }
     })
     const totalInventoryValueAtCost = products.reduce((sum, p) => sum + (p.currentStock * p.cost), 0)
     const totalInventoryValueAtPrice = products.reduce((sum, p) => sum + (p.currentStock * p.price), 0)
 
+    // 5. الحسابات الدائنة والمدينة الأخرى
     const otherAccounts = await prisma.otherAccount.findMany()
     const totalDebtorsReceivables = otherAccounts
       .filter(a => a.type === 'DEBTOR' || a.balance < 0)
       .reduce((sum, a) => sum + Math.abs(a.balance), 0)
 
+    // 6. الأصول الثابتة
     const fixedAssets = await prisma.fixedAsset.findMany({ where: { status: 'ACTIVE' } })
     const totalFixedAssetsValue = fixedAssets.reduce((sum, a) => sum + a.currentValue, 0)
 
-    // حساب التزامات الموردين الفعلية حصرياً بدون بضاعة المخزون
+    // 7. التزامات الموردين
     const vendors = await prisma.vendor.findMany({
       include: {
         transactions: { select: { type: true, amount: true, reference: true, description: true } },
@@ -378,19 +375,12 @@ export async function getBalanceSheet() {
                              refKey.includes('استرداد') || 
                              (t.description && t.description.includes('استرداد نقدي'));
 
-        if (t.type === 'OPENING_CREDIT') {
-          openingCreditTotal += t.amount
-        } else if (t.type === 'OPENING_DEBIT') {
-          openingDebitTotal += t.amount
-        } else if (isCashRefund) {
-          refundsInTotal += t.amount
-        } else if (t.type === 'PURCHASE') {
-          purchasesTotal += t.amount
-        } else if (t.type === 'RETURN') {
-          returnsTotal += t.amount
-        } else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) {
-          transactionPayments += t.amount
-        }
+        if (t.type === 'OPENING_CREDIT') openingCreditTotal += t.amount
+        else if (t.type === 'OPENING_DEBIT') openingDebitTotal += t.amount
+        else if (isCashRefund) refundsInTotal += t.amount
+        else if (t.type === 'PURCHASE') purchasesTotal += t.amount
+        else if (t.type === 'RETURN') returnsTotal += t.amount
+        else if (t.type === 'PAYMENT' || t.type.includes('CHECK')) transactionPayments += t.amount
       })
 
       let cashPaymentsTotal = 0
@@ -739,6 +729,10 @@ export async function deleteChartAccount(id: string) {
 
     if (!account) return { success: false, error: 'الحساب غير موجود' }
 
+    if (STANDARD_SYSTEM_CODES.has(account.code)) {
+      return { success: false, error: 'لا يمكن حذف الحسابات القياسية الأساسية للنظام' }
+    }
+
     if (Math.abs(account.balance) > 0) {
       return { success: false, error: 'لا يمكن حذف حساب يحتوي على رصيد مالي. يرجى تصفير رصيده أولاً عبر قيد تسوية' }
     }
@@ -757,13 +751,13 @@ export async function deleteChartAccount(id: string) {
 }
 
 // =========================================================================
-// 5. تقرير شجرة الحسابات المحاسبية الموحدة ودمج الحسابات الفرعية المخصصة
+// 5. تقرير شجرة الحسابات المحاسبية الموحدة (مصححة لمنع التكرار والازدواجية)
 // =========================================================================
 export async function getChartOfAccounts() {
   try {
     await checkAccountingAuth()
 
-    const [balanceSheetRes, incomeStatementRes, customAccounts] = await Promise.all([
+    const [balanceSheetRes, incomeStatementRes, allDbAccounts] = await Promise.all([
       getBalanceSheet(),
       getIncomeStatement(),
       (prisma as any).chartAccount.findMany({ orderBy: { code: 'asc' } })
@@ -780,8 +774,11 @@ export async function getChartOfAccounts() {
     const bs = balanceSheetRes.data
     const is = incomeStatementRes.data
 
+    // تصفية الحسابات الفرعية المخصصة الحقيقية فقط (التي ليست من الأكواد القياسية للنظام)
     const customByParent = new Map<string, any[]>()
-    customAccounts.forEach((ca: any) => {
+    allDbAccounts.forEach((ca: any) => {
+      if (STANDARD_SYSTEM_CODES.has(ca.code)) return // استبعاد الأكواد القياسية لمنع تكرارها كفرعي مخصص
+
       const pCode = ca.parentCode || '52'
       if (!customByParent.has(pCode)) customByParent.set(pCode, [])
       customByParent.get(pCode)!.push({
@@ -800,6 +797,7 @@ export async function getChartOfAccounts() {
       return [...initialChildren, ...customs]
     }
 
+    // شجرة الحسابات الموحدة النظيفة (حساب واحد لكل بند بدون تكرار)
     const chartTree = [
       {
         code: '1',
@@ -812,59 +810,58 @@ export async function getChartOfAccounts() {
             name: 'الأصول المتداولة (Current Assets)',
             type: 'DEBIT',
             balance: bs.assets.totalCurrentAssets,
-            children: [
+            children: getSubChildren('11', [
               {
-                code: '111',
+                code: '1101',
                 name: 'النقدية بالخزن والمحافظ السائلة',
                 type: 'DEBIT',
                 balance: bs.assets.cashInSafes,
                 children: bs.breakdowns.safes.map((s: any, idx: number) => ({
-                  code: `111${idx + 1}`,
+                  code: `1101${idx + 1}`,
                   name: `خزنة / محفظة: ${s.name}`,
                   type: 'DEBIT',
                   balance: s.balance
                 }))
               },
               {
-                code: '112',
+                code: '1102',
                 name: 'أرصدة الحسابات البنكية',
                 type: 'DEBIT',
                 balance: bs.assets.bankBalances,
                 children: bs.breakdowns.banks.map((b: any, idx: number) => ({
-                  code: `112${idx + 1}`,
+                  code: `1102${idx + 1}`,
                   name: `بنك: ${b.name}`,
                   type: 'DEBIT',
                   balance: b.balance
                 }))
               },
               {
-                code: '113',
+                code: '1103',
                 name: 'حسابات العملاء والمدينون التجاريون',
                 type: 'DEBIT',
                 balance: bs.assets.receivables,
                 details: `صافي المستحق: ${bs.assets.netReceivables} ج.م`
               },
               {
-                code: '114',
+                code: '1104',
                 name: 'المخزون السلعي والبضاعة الحالية (بالتكلفة)',
                 type: 'DEBIT',
                 balance: bs.assets.inventoryAtCost,
                 details: `القيمة البيعية: ${bs.assets.inventoryAtPrice} ج.م`
               },
               {
-                code: '115',
+                code: '1105',
                 name: 'المدينون والعهد وسلف طرف الغير',
                 type: 'DEBIT',
                 balance: bs.assets.debtorsReceivables
               },
               {
-                code: '116',
+                code: '1106',
                 name: 'أرصدة الموردين المدينة (لنا عندهم)',
                 type: 'DEBIT',
                 balance: bs.assets.vendorDebtors
-              },
-              ...(customByParent.get('11') || [])
-            ]
+              }
+            ])
           },
           {
             code: '12',
@@ -873,7 +870,7 @@ export async function getChartOfAccounts() {
             balance: bs.assets.fixedAssets,
             children: getSubChildren('12', [
               {
-                code: '121',
+                code: '1201',
                 name: 'الأصول الثابتة الرأسمالية (ماكينات، سيارات، أجهزة)',
                 type: 'DEBIT',
                 balance: bs.assets.fixedAssets,
@@ -896,26 +893,26 @@ export async function getChartOfAccounts() {
             balance: bs.liabilities.totalLiabilities,
             children: getSubChildren('21', [
               {
-                code: '211',
+                code: '2101',
                 name: 'الموردون والدائنون التجاريون (مستحقات الموردين)',
                 type: 'CREDIT',
                 balance: bs.liabilities.vendorPayables,
                 details: `الصافي بعد الأرصدة المدينة: ${bs.liabilities.netVendorPayables} ج.م`
               },
               {
-                code: '212',
+                code: '2102',
                 name: 'أوراق الدفع (شيكات صادرة تحت الصرف)',
                 type: 'CREDIT',
                 balance: bs.liabilities.checksPayable
               },
               {
-                code: '213',
+                code: '2103',
                 name: 'قروض وسلف الدائنين (قروض نقدية للغير)',
                 type: 'CREDIT',
                 balance: bs.liabilities.creditorsLiability
               },
               {
-                code: '214',
+                code: '2104',
                 name: 'أرصدة عملاء دائنة مقدماً (أموال للعملاء بالشركة)',
                 type: 'CREDIT',
                 balance: bs.liabilities.customerCredits
@@ -931,13 +928,13 @@ export async function getChartOfAccounts() {
         balance: bs.equity.totalEquity,
         children: getSubChildren('3', [
           {
-            code: '31',
+            code: '3101',
             name: 'رأس المال وجاري الشركاء',
             type: 'CREDIT',
             balance: bs.equity.partnersCapital
           },
           {
-            code: '32',
+            code: '3201',
             name: 'الأرباح المرحلة ورأس المال العامل التراكمي',
             type: 'CREDIT',
             balance: bs.equity.retainedEarnings
@@ -951,14 +948,14 @@ export async function getChartOfAccounts() {
         balance: is.sales.netSalesRevenue,
         children: [
           {
-            code: '41',
+            code: '4101',
             name: 'إجمالي إيراد مبيعات الفواتير',
             type: 'CREDIT',
             balance: is.sales.grossSalesRevenue,
             children: getSubChildren('41')
           },
           {
-            code: '42',
+            code: '4201',
             name: 'مردودات ومسموحات المبيعات والخصم المسموح به (-)',
             type: 'DEBIT',
             balance: - (is.sales.totalReturnsRevenue + (is.sales.totalDiscountsAllowed || 0)),
@@ -974,21 +971,21 @@ export async function getChartOfAccounts() {
         balance: is.cogs.netCOGS + is.profitability.totalExpenses,
         children: [
           {
-            code: '51',
+            code: '5101',
             name: 'تكلفة البضاعة المباعة (COGS)',
             type: 'DEBIT',
             balance: is.cogs.netCOGS,
             children: getSubChildren('51')
           },
           {
-            code: '52',
+            code: '5201',
             name: 'المصروفات العامة والتشغيلية والنثريات',
             type: 'DEBIT',
             balance: is.profitability.totalOperatingExpenses,
             children: getSubChildren('52')
           },
           {
-            code: '53',
+            code: '5301',
             name: 'الأجور والرواتب ومسحوبات الموظفين',
             type: 'DEBIT',
             balance: is.profitability.totalSalariesExpenses,
